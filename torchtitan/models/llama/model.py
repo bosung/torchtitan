@@ -81,7 +81,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
     freqs_cis = freqs_cis[0:seqlen]
     assert freqs_cis.shape == (seqlen, x.shape[-1])
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+    return freqs_cis.view(*shape).to(x.device)
 
 
 def apply_rotary_emb(
@@ -423,6 +423,13 @@ class Transformer(nn.Module):
             self.model_args.max_seq_len,
             self.model_args.rope_theta,
         )
+
+    def recompute_freqs_cis(self, ctx_len):
+        self.register_buffer("freqs_cis", precompute_freqs_cis(
+            self.model_args.dim // self.model_args.n_heads,
+            ctx_len,
+            self.model_args.rope_theta,
+        ), persistent=True)
 
     def forward(self, tokens: torch.Tensor):
         """
