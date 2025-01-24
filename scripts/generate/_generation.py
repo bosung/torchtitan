@@ -7,7 +7,7 @@
 from typing import Optional
 
 import torch
-
+from torchtitan.logging import logger
 
 def multinomial_sample_one(
     probs: torch.Tensor, rng: Optional[torch.Generator] = None
@@ -66,7 +66,8 @@ def generate(
 
     generated_tokens = input_ids.clone()
 
-    for _ in range(max_new_tokens):
+    for i in range(max_new_tokens):
+        logger.info(f" -- {i}: {generated_tokens.shape}")
         next_token = generate_next_token(
             model,
             x=generated_tokens,
