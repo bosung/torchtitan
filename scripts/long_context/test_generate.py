@@ -140,6 +140,18 @@ def test_generate(
         logger.info(f"Init model on init_device: {init_device}")
         model = model_cls.from_model_args(model_config)
 
+    # materalize model
+    model.to_empty(device=device_type)
+    model.eval()
+
+    state_dict = {"model": model.state_dict()}
+
+    # Checkpoint Loading
+    begin = time.monotonic()
+    logger.info(f"Loading chkpt at: {checkpoint_path}")
+    dcp.load(state_dict, checkpoint_id=checkpoint_path)
+    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+    
     world_mesh = None
     # Init distributed env
     if world_size > 1:
@@ -161,18 +173,6 @@ def test_generate(
         apply_tp_minus_sp(model, world_mesh["tp"])
 
     utils.set_determinism(world_mesh, device, seed, deterministic)
-
-    # materalize model
-    model.to_empty(device=device_type)
-    model.eval()
-
-    state_dict = {"model": model.state_dict()}
-
-    # Checkpoint Loading
-    begin = time.monotonic()
-    logger.info(f"Loading chkpt at: {checkpoint_path}")
-    dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
 
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
