@@ -10,12 +10,15 @@ import os
 import sys
 import time
 from pathlib import Path
+from concurrent import futures
+from functools import partial
 
 from typing import Optional
 
 import torch
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
+import torch.distributed as dist
 from torch.distributed import DeviceMesh
 from torch.distributed._tensor import Replicate
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -24,6 +27,7 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
     RowwiseParallel,
 )
+import torch.multiprocessing as mp
 
 from torchtitan import utils
 
@@ -35,12 +39,28 @@ from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models
 from torchtitan.parallelisms import ParallelDims
 from torchtitan.utils import device_module, device_type
 
+from torchtitan.datasets.hf_datasets import DPAwareDataLoader
+from torchtitan.datasets.my_datasets import MyDataset
+
+#from torchchat.generate import run_generator
+#from torchchat.cli.builder import BuilderArgs
+
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-from long_context.eval.needle.utils import load_context, insert_needle
-from generate._generation import generate
+# from generate._generation import generate
+
+
+def run_in_dist_env(world_size: int, rank: int, target: callable):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "29500"
+    os.environ["RDZV_BACKEND"] = "c10d"
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(rank)
+    os.environ["LOCALRANK"] = str(rank)
+
+    return target()
 
 
 def apply_tp_minus_sp(model: nn.Module, tp_mesh: DeviceMesh):
@@ -93,41 +113,38 @@ def test_generate(
     config.parse_args([f"--job.config_file={config_path}"])
     config._validate_config()
 
-    ######################################################################################
-    # Construct the Needle-in-a-HayStack Prompt
-    needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"
-    ctx_len = ctx_len # need at least 8*4090 to run this length
-    depth = 0.5
-    context = load_context(fpath="scripts/long_context/eval/needle/PaulGrahamEssays/*.txt", ctx_len=ctx_len)
-    context = insert_needle(context, needle, depth=depth)
-    needle_idx = context.find("The best thing to do in San Francisco is")
-    logger.info("Context has %d chars, needle inserted at %d char location:\n" % (len(context), needle_idx))
-    logger.info(context[needle_idx - 150: needle_idx + 150]) # look at how the needle is inserted 
-
-    prompt ="\n<|im_start|> This is a very long story book: <book> %s </book>.\n" % context
-    question = "What is the best thing to do in San Francisco?"
-    prompt += "Based on the content of the book, Question: %s\nAnswer:" % question
-    ######################################################################################
+    # if local_rank == 0:
+        ######################################################################################
+        # Construct the Needle-in-a-HayStack Prompt
+        # needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"
+        # depth = 0.5
+        # context = load_context(fpath="scripts/long_context/eval/needle/PaulGrahamEssays/*.txt", ctx_len=ctx_len)
+        # context = insert_needle(context, needle, depth=depth)
+        # needle_idx = context.find("The best thing to do in San Francisco is")
+        # logger.info("Context has %d chars, needle inserted at %d char location:\n" % (len(context), needle_idx))
+        # logger.info(context[needle_idx - 150: needle_idx + 150]) # look at how the needle is inserted 
+        # prompt ="\n<|im_start|> This is a very long story book: <book> %s </book>.\n" % context
+        # question = "What is the best thing to do in San Francisco?"
+        # prompt += "Based on the content of the book, Question: %s\nAnswer:" % question
+        ######################################################################################
 
     # if len(args.prompt) == 0:
     #     logger.warning(
     #         "The input prompt is empty, model will respond from a empty sequence."
     #     )
 
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    device = torch.device(f"{device_type}:{local_rank}")
-    device_module.set_device(device)
-    device_memory_monitor = build_device_memory_monitor()
-
     model_name = config.model.name
-
-    logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
     # Tokenizer setup
     tokenizer = build_tokenizer(
         model_name_to_tokenizer[model_name], config.model.tokenizer_path
     )
+
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    device = torch.device(f"{device_type}:{local_rank}")
+    device_module.set_device(device)
+    device_memory_monitor = build_device_memory_monitor()
 
     model_config = models_config[model_name][config.model.flavor]
     model_config.norm_type = config.model.norm_type
@@ -144,14 +161,8 @@ def test_generate(
     model.to_empty(device=device_type)
     model.eval()
 
-    state_dict = {"model": model.state_dict()}
+    logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
-    # Checkpoint Loading
-    begin = time.monotonic()
-    logger.info(f"Loading chkpt at: {checkpoint_path}")
-    dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
-    
     world_mesh = None
     # Init distributed env
     if world_size > 1:
@@ -172,7 +183,44 @@ def test_generate(
         # sequences would require https://github.com/pytorch/torchtitan/pull/686
         apply_tp_minus_sp(model, world_mesh["tp"])
 
+    if parallel_dims.dp_enabled:
+        dp_mesh = world_mesh["dp"]
+        dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
+    else:
+        dp_degree, dp_rank = 1, 0
+
     utils.set_determinism(world_mesh, device, seed, deterministic)
+
+    # build dataloader
+    '''
+    data_loader = build_hf_data_loader(
+        job_config.training.dataset,
+        job_config.training.dataset_path,
+        tokenizer,
+        job_config.training.batch_size,
+        job_config.training.seq_len,
+        dp_degree,
+        dp_rank,
+    )
+    '''
+    my_ds = MyDataset(
+        #data=[prompt],
+        tokenizer=tokenizer,
+        seq_len=ctx_len,
+        world_size=world_size,
+        rank=dp_rank,
+    )
+    data_loader = DPAwareDataLoader(dp_rank, my_ds, batch_size=batch_size)
+
+    ################### Loading checkpoints ##########################
+
+    state_dict = {"model": model.state_dict()}
+
+    # Checkpoint Loading
+    begin = time.monotonic()
+    logger.info(f"Loading chkpt at: {checkpoint_path}")
+    dcp.load(state_dict, checkpoint_id=checkpoint_path)
+    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
 
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
@@ -186,40 +234,57 @@ def test_generate(
         f"({device_mem_stats.max_reserved_pct:.2f}%)"
     )
 
+    # setting context 
+    train_context = utils.get_train_context(False, False)
+
     # Tokenize prompt and repeat batch_size times
-    input_ids = (
-        (
-            torch.tensor(
-                tokenizer.encode(prompt, bos=True, eos=False), dtype=torch.long
-            )
-            .view(1, -1)
-            .repeat(batch_size, 1)
-        )
-    ).to(device_type)
+    # input_ids = (
+    #     (
+    #         torch.tensor(
+    #             tokenizer.encode(prompt, bos=True, eos=False), dtype=torch.long
+    #         )
+    #         .view(1, -1)
+    #         .repeat(batch_size, 1)
+    #     )
+    # ).to(device_type)
 
     device_memory_monitor.reset_peak_stats()
 
+    ###################################################
     # Run generation
+
     t0 = time.monotonic()
-    responses = generate(
-        model,
-        input_ids,
-        temperature=temperature,
-        max_new_tokens=max_new_tokens,
-        top_k=top_k,
-        seed=seed,
-    )
+
+    with torch.no_grad():
+        for batch in data_loader:
+            #input_ids = batch.input
+            input_ids = batch
+            generated_tokens = input_ids.clone()
+            with train_context():
+                max_new_tokens = 3
+                for i in range(max_new_tokens):
+                    logger.info(f" -- {i}: {generated_tokens.shape}")
+                    logits = model(input_ids)
+                    logger.info(f" -- {logits.shape}")
+                    #gathered_tensors = [torch.zeros_like(logits) for _ in range(dist.get_world_size())]
+                    #dist.all_gather(gathered_tensors, logits)
+                    #logger.info(f"Rank {dist.get_rank()} gathered: {len(gathered_tensors)}, gathered[0]: {gathered_tensors[0].shape}")
+                    #loss = loss_fn(pred, labels)
+                    # pred.shape=(bs, seq_len, vocab_size)
+                    # need to free to before bwd to avoid peaking memory
+                    #del pred
+                    
     t1 = time.monotonic()
     elapsed_sec = t1 - t0
 
     # Post process
-    B, T = responses.size()  # B: batch_size, T: total seq length
-    input_n_tokens = input_ids.size(1)
-    generated_n_tokens = T - input_n_tokens  # == max_new_tokens
+    #B, T = responses.size()  # B: batch_size, T: total seq length
+    #input_n_tokens = input_ids.size(1)
+    #generated_n_tokens = T - input_n_tokens  # == max_new_tokens
 
     if local_rank == 0:
         logger.info(f"Generation completed in {elapsed_sec:.2f} seconds.")
-
+    '''
         r, b = color.red, color.blue
 
         output_data = {
@@ -265,7 +330,7 @@ def test_generate(
 
         if args.out:
             print(json.dumps(output_data, indent=4))
-
+    '''
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test generation")
