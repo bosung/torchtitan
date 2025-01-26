@@ -206,17 +206,17 @@ def test_generate(
         logger.info(f"Init model on init_device: {init_device}")
         model = model_cls.from_model_args(model_config)
 
+    # apply_tp (with Sequence Parallel) on unevenly sharded
+    # sequences would require https://github.com/pytorch/torchtitan/pull/686
+    # apply_tp_minus_sp(model, world_mesh["tp"])
+    parallelize_llama(model, world_mesh, parallel_dims, config)
+    
     # materalize model
     model.to_empty(device=device_type)
     with torch.no_grad():
         buffer_device = None
         model.init_weights(buffer_device=buffer_device)
     model.eval()
-
-    # apply_tp (with Sequence Parallel) on unevenly sharded
-    # sequences would require https://github.com/pytorch/torchtitan/pull/686
-    # apply_tp_minus_sp(model, world_mesh["tp"])
-    parallelize_llama(model, world_mesh, parallel_dims, config)
     
     ################### Loading checkpoints ##########################
 
