@@ -203,6 +203,7 @@ def test_generate(
         dp_rank,
     )
     '''
+
     my_ds = MyDataset(
         #data=[prompt],
         tokenizer=tokenizer,
@@ -257,22 +258,52 @@ def test_generate(
 
     with torch.no_grad():
         for batch in data_loader:
-            #input_ids = batch.input
+            '''
             input_ids = batch
-            generated_tokens = input_ids.clone()
+            logger.info(f" -- Rank: {local_rank}, input_ids shape = {input_ids.shape}")
+
+            # Prepare the generated_tokens tensor on all ranks
+            if local_rank == 0:
+                generated_tokens = input_ids.clone()
+            else:
+                generated_tokens = torch.empty_like(input_ids, device='cuda')  # Match the shape of input_ids
+
+            # Broadcast the variable from rank 0 to all ranks
+            dist.broadcast(generated_tokens, src=0)
+            '''
+            # Step 1: Handle the input_ids on rank 0 and prepare size info
+            if local_rank == 0:
+                input_ids = batch.to(device)
+                generated_tokens = input_ids.clone()
+                size_tensor = torch.tensor(input_ids.shape, device=device, dtype=torch.long)
+            else:
+                input_ids = None
+                generated_tokens = None
+                size_tensor = torch.empty(2, device=device, dtype=torch.long)  # Assuming max rank 2D tensors
+
+            # Step 2: Broadcast the size of input_ids from rank 0
+            dist.broadcast(size_tensor, src=0)
+
+            # Step 3: Dynamically resize input_ids and generated_tokens tensors on other ranks
+            if local_rank != 0:
+                input_ids = torch.empty(tuple(size_tensor.tolist()), device=device, dtype=torch.int64)
+                generated_tokens = torch.empty_like(input_ids, device=device)
+
+            # Proceed with training or further computation
             with train_context():
                 max_new_tokens = 3
                 for i in range(max_new_tokens):
-                    logger.info(f" -- {i}: {generated_tokens.shape}")
-                    logits = model(input_ids)
-                    logger.info(f" -- {logits.shape}")
-                    #gathered_tensors = [torch.zeros_like(logits) for _ in range(dist.get_world_size())]
-                    #dist.all_gather(gathered_tensors, logits)
-                    #logger.info(f"Rank {dist.get_rank()} gathered: {len(gathered_tensors)}, gathered[0]: {gathered_tensors[0].shape}")
-                    #loss = loss_fn(pred, labels)
-                    # pred.shape=(bs, seq_len, vocab_size)
-                    # need to free to before bwd to avoid peaking memory
-                    #del pred
+                    logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
+                    logits = model(input_ids)  # Generate logits
+                    logger.info(f"Step {i}: logits shape = {logits.shape}")
+
+                #gathered_tensors = [torch.zeros_like(logits) for _ in range(dist.get_world_size())]
+                #dist.all_gather(gathered_tensors, logits)
+                #logger.info(f"Rank {dist.get_rank()} gathered: {len(gathered_tensors)}, gathered[0]: {gathered_tensors[0].shape}")
+                #loss = loss_fn(pred, labels)
+                # pred.shape=(bs, seq_len, vocab_size)
+                # need to free to before bwd to avoid peaking memory
+                #del pred
                     
     t1 = time.monotonic()
     elapsed_sec = t1 - t0
