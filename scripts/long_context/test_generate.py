@@ -37,6 +37,7 @@ from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.parallelisms import ParallelDims
+from torchtitan.parallelisms.parallelize_llama import parallelize_llama
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
@@ -89,7 +90,6 @@ def apply_tp_minus_sp(model: nn.Module, tp_mesh: DeviceMesh):
             device_mesh=tp_mesh,
             parallelize_plan=layer_plan,
         )
-
 
 @record
 def test_generate(
@@ -215,7 +215,8 @@ def test_generate(
 
     # apply_tp (with Sequence Parallel) on unevenly sharded
     # sequences would require https://github.com/pytorch/torchtitan/pull/686
-    apply_tp_minus_sp(model, world_mesh["tp"])
+    # apply_tp_minus_sp(model, world_mesh["tp"])
+    parallelize_llama(model, world_mesh, parallel_dims, config)
     
     ################### Loading checkpoints ##########################
 
