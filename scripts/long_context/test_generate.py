@@ -146,21 +146,6 @@ def test_generate(
     device_module.set_device(device)
     device_memory_monitor = build_device_memory_monitor()
 
-    model_config = models_config[model_name][config.model.flavor]
-    model_config.norm_type = config.model.norm_type
-    model_config.max_seq_len = config.training.seq_len
-    model_config.vocab_size = tokenizer.n_words
-
-    model_cls = model_name_to_cls[model_name]
-    init_device = "meta" if world_size > 1 else device
-    with torch.device(init_device):
-        logger.info(f"Init model on init_device: {init_device}")
-        model = model_cls.from_model_args(model_config)
-
-    # materalize model
-    model.to_empty(device=device_type)
-    model.eval()
-
     logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
     world_mesh = None
@@ -178,10 +163,6 @@ def test_generate(
         )
         # Build world mesh for parallelism
         world_mesh = parallel_dims.build_mesh(device_type=device_type)
-
-        # apply_tp (with Sequence Parallel) on unevenly sharded
-        # sequences would require https://github.com/pytorch/torchtitan/pull/686
-        apply_tp_minus_sp(model, world_mesh["tp"])
 
     if parallel_dims.dp_enabled:
         dp_mesh = world_mesh["dp"]
@@ -213,15 +194,38 @@ def test_generate(
     )
     data_loader = DPAwareDataLoader(dp_rank, my_ds, batch_size=batch_size)
 
+    # model
+    model_config = models_config[model_name][config.model.flavor]
+    model_config.norm_type = config.model.norm_type
+    model_config.max_seq_len = config.training.seq_len
+    model_config.vocab_size = tokenizer.n_words
+
+    model_cls = model_name_to_cls[model_name]
+    init_device = "meta" if world_size > 1 else device
+    with torch.device(init_device):
+        logger.info(f"Init model on init_device: {init_device}")
+        model = model_cls.from_model_args(model_config)
+
+    # materalize model
+    model.to_empty(device=device_type)
+    with torch.no_grad():
+        buffer_device = None
+        model.init_weights(buffer_device=buffer_device)
+    model.eval()
+
+    # apply_tp (with Sequence Parallel) on unevenly sharded
+    # sequences would require https://github.com/pytorch/torchtitan/pull/686
+    apply_tp_minus_sp(model, world_mesh["tp"])
+    
     ################### Loading checkpoints ##########################
 
     state_dict = {"model": model.state_dict()}
 
     # Checkpoint Loading
-    begin = time.monotonic()
-    logger.info(f"Loading chkpt at: {checkpoint_path}")
-    dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+    # begin = time.monotonic()
+    # logger.info(f"Loading chkpt at: {checkpoint_path}")
+    # dcp.load(state_dict, checkpoint_id=checkpoint_path)
+    # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
 
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
@@ -250,7 +254,8 @@ def test_generate(
     # ).to(device_type)
 
     device_memory_monitor.reset_peak_stats()
-
+    
+    rank = dist.get_rank()
     ###################################################
     # Run generation
 
@@ -258,21 +263,9 @@ def test_generate(
 
     with torch.no_grad():
         for batch in data_loader:
-            '''
-            input_ids = batch
-            logger.info(f" -- Rank: {local_rank}, input_ids shape = {input_ids.shape}")
 
-            # Prepare the generated_tokens tensor on all ranks
-            if local_rank == 0:
-                generated_tokens = input_ids.clone()
-            else:
-                generated_tokens = torch.empty_like(input_ids, device='cuda')  # Match the shape of input_ids
-
-            # Broadcast the variable from rank 0 to all ranks
-            dist.broadcast(generated_tokens, src=0)
-            '''
             # Step 1: Handle the input_ids on rank 0 and prepare size info
-            if local_rank == 0:
+            if rank == 0:
                 input_ids = batch.to(device)
                 generated_tokens = input_ids.clone()
                 size_tensor = torch.tensor(input_ids.shape, device=device, dtype=torch.long)
@@ -285,9 +278,12 @@ def test_generate(
             dist.broadcast(size_tensor, src=0)
 
             # Step 3: Dynamically resize input_ids and generated_tokens tensors on other ranks
-            if local_rank != 0:
+            if rank != 0:
                 input_ids = torch.empty(tuple(size_tensor.tolist()), device=device, dtype=torch.int64)
                 generated_tokens = torch.empty_like(input_ids, device=device)
+            
+            # Step 4: Broadcast the data from rank 0
+            dist.broadcast(generated_tokens, src=0)
 
             # Proceed with training or further computation
             with train_context():
@@ -313,7 +309,7 @@ def test_generate(
     #input_n_tokens = input_ids.size(1)
     #generated_n_tokens = T - input_n_tokens  # == max_new_tokens
 
-    if local_rank == 0:
+    if rank == 0:
         logger.info(f"Generation completed in {elapsed_sec:.2f} seconds.")
     '''
         r, b = color.red, color.blue
