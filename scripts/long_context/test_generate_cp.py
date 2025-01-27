@@ -234,13 +234,13 @@ def test_generate(
 
     ################### Loading checkpoints ##########################
 
-    #state_dict = {"model": model.state_dict()}
+    state_dict = {"model": model.state_dict()}
 
     # Checkpoint Loading
-    # begin = time.monotonic()
-    # logger.info(f"Loading chkpt at: {checkpoint_path}")
-    # dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+    begin = time.monotonic()
+    logger.info(f"Loading chkpt at: {checkpoint_path}")
+    dcp.load(state_dict, checkpoint_id=checkpoint_path)
+    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
     
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
@@ -270,6 +270,7 @@ def test_generate(
         input_ids = batch.to(device)
 
         generated_tokens = input_ids.clone()
+        new_tokens = []
 
         max_new_tokens = 3
         for i in range(max_new_tokens):
@@ -299,21 +300,22 @@ def test_generate(
                 logger.info(f"Step {i}: logits shape = {logits.shape}")
 
             new_token, _ = sample(logits, need_probs=True, temperature=temperature, top_k=top_k)
-            logger.info(f"Step {i}: new_token shape = {new_token.shape}")
-            generated_tokens = torch.cat([input_ids, new_token.unsqueeze(0)], dim=1)
-
+            logger.info(f"Step {i}: new_token = {new_token}")
+            new_tokens.append(new_token.item())
+            generated_tokens = torch.cat([input_ids, torch.tensor(new_tokens, device=input_ids.device, dtype=input_ids.dtype).unsqueeze(0)], dim=1)
                     
     t1 = time.monotonic()
     elapsed_sec = t1 - t0
 
     # Post process
-    #B, T = responses.size()  # B: batch_size, T: total seq length
-    #input_n_tokens = input_ids.size(1)
+    B, T = generated_tokens.size()  # B: batch_size, T: total seq length
+    input_n_tokens = input_ids.size(1)
     #generated_n_tokens = T - input_n_tokens  # == max_new_tokens
+    generated_n_tokens = 3
 
     if rank == 0:
         logger.info(f"Generation completed in {elapsed_sec:.2f} seconds.")
-    '''
+    
         r, b = color.red, color.blue
 
         output_data = {
@@ -321,12 +323,13 @@ def test_generate(
             "responses": [],
         }
 
-        for i, tokens in enumerate(responses):
+        for i, tokens in enumerate(generated_tokens):
             inp_tok = tokens[:input_n_tokens].tolist()
             out_tok = tokens[input_n_tokens:].tolist()
 
             input_text = tokenizer.decode(inp_tok)
-            output_text = tokenizer.decode(out_tok)
+            # output_text = tokenizer.decode(out_tok)
+            output_text = tokenizer.decode(new_tokens)
 
             _data = {
                 "response_idx": i,
@@ -359,7 +362,7 @@ def test_generate(
 
         if args.out:
             print(json.dumps(output_data, indent=4))
-    '''
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test generation")
