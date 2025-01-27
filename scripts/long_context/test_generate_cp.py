@@ -243,7 +243,7 @@ def test_generate(
     
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
-    model.recompute_freqs_cis(1000000)
+    model.recompute_freqs_cis(1048576)
     logger.info(f"Resizing DONE: {prev_freqs_cis_dim} -> {model.freqs_cis.shape} ")
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
