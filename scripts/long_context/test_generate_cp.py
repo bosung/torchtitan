@@ -195,7 +195,6 @@ def test_generate(
     )
     # build dataloader
     my_ds = MyDataset(
-        #data=[prompt],
         tokenizer=tokenizer,
         seq_len=ctx_len,
         world_size=world_size,
@@ -244,7 +243,7 @@ def test_generate(
     
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
-    model.recompute_freqs_cis(ctx_len)
+    model.recompute_freqs_cis(1000000)
     logger.info(f"Resizing DONE: {prev_freqs_cis_dim} -> {model.freqs_cis.shape} ")
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -274,13 +273,11 @@ def test_generate(
 
         max_new_tokens = 3
         for i in range(max_new_tokens):
-            logger.info(f"{generated_tokens.shape}")
             seq_len = generated_tokens.shape[-1]
-            logger.info(f"{seq_len}")
             max_len = (seq_len // (world_size * 2)) * (world_size * 2)
-            logger.info(f"{generated_tokens.shape}, {max_len}")
+            logger.info(f"Input size: {generated_tokens.shape}, truncate: {max_len}")
             generated_tokens = generated_tokens[:, :max_len]
-            logger.info(f"{generated_tokens.shape}")
+            logger.info(f"model input: {generated_tokens.shape}")
 
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
