@@ -52,7 +52,12 @@ class MyDataset(IterableDataset, Stateful):
 
         needle = "\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n"
         depth = 0.5
-        context = load_context(fpath="scripts/long_context/eval/needle/PaulGrahamEssays/*.txt", ctx_len=seq_len)
+        _context = load_context(fpath="scripts/long_context/eval/needle/PaulGrahamEssays/*.txt", ctx_len=seq_len)
+        context = ""
+        # # of entire context tokens = 148836
+        for _ in range((seq_len//148836)+1):
+            context += _context
+
         context = insert_needle(context, needle, depth=depth)
         needle_idx = context.find("The best thing to do in San Francisco is")
         logger.info("Context has %d chars, needle inserted at %d char location:\n" % (len(context), needle_idx))
