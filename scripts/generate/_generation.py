@@ -32,7 +32,6 @@ def logits_to_probs(
     return probs
 
 def sample(
-    self,
     logits,
     need_probs: bool,
     temperature: float = 0,
