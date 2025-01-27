@@ -237,10 +237,10 @@ def test_generate(
     state_dict = {"model": model.state_dict()}
 
     # Checkpoint Loading
-    begin = time.monotonic()
-    logger.info(f"Loading chkpt at: {checkpoint_path}")
-    dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+    # begin = time.monotonic()
+    # logger.info(f"Loading chkpt at: {checkpoint_path}")
+    # dcp.load(state_dict, checkpoint_id=checkpoint_path)
+    # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
     
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
     prev_freqs_cis_dim = model.freqs_cis.shape
