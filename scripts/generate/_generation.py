@@ -31,6 +31,23 @@ def logits_to_probs(
     probs = torch.nn.functional.softmax(logits, dim=-1)
     return probs
 
+def sample(
+    self,
+    logits,
+    need_probs: bool,
+    temperature: float = 0,
+    top_k: Optional[int] = None,
+):
+    logits = logits[0, -1]
+    logger.debug("Logits: %s", logits)
+    if temperature == 0 and not need_probs:
+        _, idx_next = torch.topk(logits, k=1, dim=-1)
+        return (idx_next, None)
+    probs = logits_to_probs(logits, temperature, top_k)
+    #idx_next = self.multinomial_sample_one_no_sync(probs)
+    idx_next = multinomial_sample_one(probs)
+    return idx_next, probs
+
 
 def generate_next_token(
     model,

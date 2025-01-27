@@ -13,7 +13,7 @@ from pathlib import Path
 from concurrent import futures
 from functools import partial
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -37,7 +37,8 @@ from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.parallelisms import ParallelDims
-from torchtitan.parallelisms.parallelize_llama import parallelize_llama
+from torchtitan.parallelisms.parallelize_llama import parallelize_llama, apply_tp
+from torchtitan.parallelisms.pipeline_llama import pipeline_llama_manual_split
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
@@ -50,8 +51,32 @@ from torchtitan.datasets.my_datasets import MyDataset
 wd = Path(__file__).parent.parent.resolve()
 sys.path.append(str(wd))
 
-# from generate._generation import generate
+from generate._generation import sample
 
+
+def get_example_ins_outs(model, model_config, device, 
+    pp_rank, first_pp_rank, last_pp_rank,
+    batch_size: int , seqlen: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    This function generates example inputs and outputs for the prefill and decode stages.
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing the example inputs and outputs.
+    """
+    model_dtype = torch.bfloat16
+    mb_ids = torch.randint(
+        0, model_config.vocab_size, (batch_size, seqlen), device=device
+    )
+    activation = torch.rand(
+        batch_size, seqlen, model_config.dim, device=device, dtype=model_dtype
+    )
+    logits = torch.rand(
+        batch_size, seqlen, model_config.vocab_size, device=device, dtype=model_dtype
+    )
+    example_inputs = (mb_ids if pp_rank == first_pp_rank else activation,)
+    example_outputs = (logits if pp_rank == last_pp_rank else activation,)
+    return example_inputs, example_outputs
+    
 
 def run_in_dist_env(world_size: int, rank: int, target: callable):
     os.environ["MASTER_ADDR"] = "localhost"
@@ -156,8 +181,8 @@ def test_generate(
             dp_replicate=1,
             dp_shard=-1,
             cp=1,
-            tp=world_size,
-            pp=1,
+            tp=2,
+            pp=4,
             world_size=world_size,
             enable_loss_parallel=False,
         )
@@ -209,26 +234,50 @@ def test_generate(
     # apply_tp (with Sequence Parallel) on unevenly sharded
     # sequences would require https://github.com/pytorch/torchtitan/pull/686
     # apply_tp_minus_sp(model, world_mesh["tp"])
-    parallelize_llama(model, world_mesh, parallel_dims, config)
-    
-    # materalize model
-    model.to_empty(device=device_type)
-    with torch.no_grad():
-        buffer_device = None
-        model.init_weights(buffer_device=buffer_device)
-    model.eval()
-    
+    # parallelize_llama(model, world_mesh, parallel_dims, config)
+
+    # apply parallelisms and initialization
+    if parallel_dims.pp_enabled:
+        pp_mesh = world_mesh["pp"]
+        # apply PT-D Pipeline Parallel
+        _, model_parts = pipeline_llama_manual_split(model, pp_mesh, parallel_dims, config, device, model_config)
+        # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
+        del model
+
+        # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
+        # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
+        # optimizer, and checkpointing
+        for m in model_parts:
+            # apply SPMD-style PT-D techniques
+            parallelize_llama(m, world_mesh, parallel_dims, config)
+            m.to_empty(device=init_device)
+            with torch.no_grad():
+                buffer_device = None
+                m.init_weights(buffer_device=buffer_device)
+            m.eval()
+    else:
+        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
+        parallelize_llama(model, world_mesh, parallel_dims, config)
+        model.to_empty(device=init_device)
+        with torch.no_grad():
+            buffer_device = None
+            model.init_weights(buffer_device=buffer_device)
+        model.eval()
+
+        model_parts = [model]
+
     ################### Loading checkpoints ##########################
 
-    state_dict = {"model": model.state_dict()}
+    #state_dict = {"model": model.state_dict()}
 
     # Checkpoint Loading
     # begin = time.monotonic()
     # logger.info(f"Loading chkpt at: {checkpoint_path}")
     # dcp.load(state_dict, checkpoint_id=checkpoint_path)
     # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
-
+    
     logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
+    model = model_parts[0]
     prev_freqs_cis_dim = model.freqs_cis.shape
     model.recompute_freqs_cis(ctx_len)
     logger.info(f"Resizing DONE: {prev_freqs_cis_dim} -> {model.freqs_cis.shape} ")
@@ -257,42 +306,115 @@ def test_generate(
     device_memory_monitor.reset_peak_stats()
     
     rank = dist.get_rank()
+
+    if parallel_dims.pp_enabled:
+        pp_rank = pp_mesh.get_local_rank()
+        pp_group = pp_mesh.get_group()
+
+        pp_degree = pp_mesh.size()
+
+        # Convenience variables
+        first_pp_rank = 0
+        last_pp_rank = pp_degree - 1
+
+        first_pp_rank_global_id = dist.get_global_rank(pp_group, first_pp_rank)
+        last_pp_rank_global_id = dist.get_global_rank(pp_group, last_pp_rank)
+
+        from torch.distributed.pipelining import PipelineStage, ScheduleGPipe
+        example_inputs, example_outputs = get_example_ins_outs(
+            model, model_config, device, pp_rank, first_pp_rank, last_pp_rank, 1, 1
+        )
+        decode_stage = PipelineStage(
+            model,
+            pp_rank,
+            pp_degree,
+            device,
+            input_args=example_inputs,
+            output_args=example_outputs,
+            group=pp_group,
+        )
+        # create schedule
+        decoder = ScheduleGPipe(decode_stage, 1)
+
     ###################################################
     # Run generation
-
+    
     t0 = time.monotonic()
 
     with torch.no_grad():
         for batch in data_loader:
-
-            # Step 1: Handle the input_ids on rank 0 and prepare size info
-            if rank == 0:
-                input_ids = batch.to(device)
-                generated_tokens = input_ids.clone()
-                size_tensor = torch.tensor(input_ids.shape, device=device, dtype=torch.long)
-            else:
-                input_ids = None
-                generated_tokens = None
-                size_tensor = torch.empty(2, device=device, dtype=torch.long)  # Assuming max rank 2D tensors
-
-            # Step 2: Broadcast the size of input_ids from rank 0
-            dist.broadcast(size_tensor, src=0)
-
-            # Step 3: Dynamically resize input_ids and generated_tokens tensors on other ranks
-            if rank != 0:
-                input_ids = torch.empty(tuple(size_tensor.tolist()), device=device, dtype=torch.int64)
-                generated_tokens = torch.empty_like(input_ids, device=device)
-            
-            # Step 4: Broadcast the data from rank 0
-            dist.broadcast(generated_tokens, src=0)
-
-            # Proceed with training or further computation
+            # ==== Prepare input ====
             with train_context():
                 max_new_tokens = 3
                 for i in range(max_new_tokens):
-                    logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
-                    logits = model(input_ids)  # Generate logits
-                    logger.info(f"Step {i}: logits shape = {logits.shape}")
+
+                    new_token = input_ids.view(1, -1)
+                    
+
+                    if parallel_dims.pp_enabled:
+                        input_pos = torch.tensor([1, 1], device=device)
+                        lane = 0
+                        kwargs = {"input_pos": input_pos, "cache_lane": lane}
+
+                        # Pipeline Parallel forward / backward inside step() call
+                        is_last_stage = pp_mesh.get_local_rank() == pp_mesh.size() - 1
+                
+                        # Run data through pipeline
+                        if pp_rank == first_pp_rank:
+                            logits = decoder.step(new_token, **kwargs)
+                        elif pp_rank == last_pp_rank:
+                            logits = decoder.step(**kwargs)
+                        else:  # middle pp ranks
+                            decoder.step(**kwargs)
+
+                        # Decode the output
+                        if pp_rank == last_pp_rank:
+                            new_token, _ = sample(logits, need_probs=need_probs, **sampling_kwargs)
+                            if pp_rank != first_pp_rank:
+                                dist.send(
+                                    new_token,
+                                    dst=first_pp_rank_global_id,
+                                    group=pp_group,
+                                )
+                            logger.info(f"Step {i}: generated_tokens shape = {new_token.shape}")
+                        else:
+                            new_token = torch.zeros(1, 1, device=device, dtype=torch.int64)
+                            if pp_rank == first_pp_rank:
+                                dist.recv(
+                                    new_token,
+                                    src=last_pp_rank_global_id,
+                                    group=pp_group,
+                                )
+                                #TODO: Why do we get 2d tensor here?
+                                new_token=new_token[0]
+                        
+                        logger.info(f"Step {i}: pp_rank: {pp_rank}")
+                        
+                    else:
+                        # Step 1: Handle the input_ids on rank 0 and prepare size info
+                        if rank == 0:
+                            input_ids = batch.to(device)
+                            generated_tokens = input_ids.clone()
+                            size_tensor = torch.tensor(input_ids.shape, device=device, dtype=torch.long)
+                        else:
+                            input_ids = None
+                            generated_tokens = None
+                            size_tensor = torch.empty(2, device=device, dtype=torch.long)  # Assuming max rank 2D tensors
+
+                        # Step 2: Broadcast the size of input_ids from rank 0
+                        dist.broadcast(size_tensor, src=0)
+
+                        # Step 3: Dynamically resize input_ids and generated_tokens tensors on other ranks
+                        if rank != 0:
+                            input_ids = torch.empty(tuple(size_tensor.tolist()), device=device, dtype=torch.int64)
+                            generated_tokens = torch.empty_like(input_ids, device=device)
+                        
+                        # Step 4: Broadcast the data from rank 0
+                        dist.broadcast(generated_tokens, src=0)
+                        # Proceed with training or further computation
+                        logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
+                        logits = model(input_ids)  # Generate logits
+                        logger.info(f"Step {i}: logits shape = {logits.shape}")
 
                 #gathered_tensors = [torch.zeros_like(logits) for _ in range(dist.get_world_size())]
                 #dist.all_gather(gathered_tensors, logits)
