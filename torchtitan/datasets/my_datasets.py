@@ -21,6 +21,8 @@ from datasets.distributed import split_dataset_by_node
 
 from scripts.long_context.eval.needle.utils import load_context, insert_needle
 
+from transformers import PreTrainedTokenizerFast
+
 @dataclass
 class DatasetConfig:
     path: str
@@ -84,7 +86,10 @@ class MyDataset(IterableDataset, Stateful):
                 # Use the dataset-specific text processor
                 #sample_text = self._text_processor(sample)
                 sample_text = sample
-                sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
+                if isinstance(self._tokenizer, PreTrainedTokenizerFast):
+                    sample_tokens = self._tokenizer.encode(sample_text)
+                else:
+                    sample_tokens = self._tokenizer.encode(sample_text, bos=True, eos=True)
                 #self._all_tokens.extend(sample_tokens)
                 self._sample_idx += 1
 

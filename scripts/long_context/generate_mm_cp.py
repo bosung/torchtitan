@@ -37,12 +37,14 @@ from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.parallelisms import ParallelDims
-from torchtitan.parallelisms.parallelize_llama import parallelize_llama, apply_tp
+from torchtitan.parallelisms.parallelize_llava import parallelize_llava
 from torchtitan.parallelisms.pipeline_llama import pipeline_llama_manual_split
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
 from torchtitan.datasets.my_datasets import MyDataset
+
+from transformers import AutoConfig, AutoProcessor, LlavaOnevisionForConditionalGeneration
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -108,9 +110,9 @@ def test_generate(
     model_name = config.model.name
 
     # Tokenizer setup
-    tokenizer = build_tokenizer(
-        model_name_to_tokenizer[model_name], config.model.tokenizer_path
-    )
+    processor = AutoProcessor.from_pretrained(model_name)
+    tokenizer = processor.tokenizer
+
     # build dataloader
     my_ds = MyDataset(
         tokenizer=tokenizer,
@@ -121,25 +123,24 @@ def test_generate(
     data_loader = DPAwareDataLoader(dp_rank, my_ds, batch_size=batch_size)
 
     # model
-    model_config = models_config[model_name][config.model.flavor]
-    model_config.norm_type = config.model.norm_type
-    model_config.max_seq_len = config.training.seq_len
-    model_config.vocab_size = tokenizer.n_words
+    # model_config = models_config[model_name][config.model.flavor]
+    # model_config.norm_type = config.model.norm_type
+    # model_config.max_seq_len = config.training.seq_len
+    # model_config.vocab_size = tokenizer.n_words
 
-    model_cls = model_name_to_cls[model_name]
+    #model_cls = model_name_to_cls[model_name]
     #init_device = "meta" if world_size > 1 else device
     init_device = device_type
     with torch.device(init_device):
         logger.info(f"Init model on init_device: {init_device}")
-        model = model_cls.from_model_args(model_config)
+        model = LlavaOnevisionForConditionalGeneration.from_pretrained(model_name)
 
     # apply parallelisms and initialization
-    # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-    parallelize_llama(model, world_mesh, parallel_dims, config)
-    model.to_empty(device=init_device)
-    with torch.no_grad():
-        buffer_device = None
-        model.init_weights(buffer_device=buffer_device)
+    parallelize_llava(model, world_mesh, parallel_dims, config)
+    #model.to_empty(device=init_device)
+    # with torch.no_grad():
+    #     buffer_device = None
+    #     model.init_weights(buffer_device=buffer_device)
     model.eval()
 
     model_parts = [model]
@@ -149,15 +150,16 @@ def test_generate(
     state_dict = {"model": model.state_dict()}
 
     # Checkpoint Loading
-    # begin = time.monotonic()
-    # logger.info(f"Loading chkpt at: {checkpoint_path}")
-    # dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+    from torch.distributed.checkpoint import DefaultLoadPlanner
+    begin = time.monotonic()
+    logger.info(f"Loading chkpt at: {checkpoint_path}")
+    dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=DefaultLoadPlanner(allow_partial_load=True))
+    logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
     
-    logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
-    prev_freqs_cis_dim = model.freqs_cis.shape
-    model.recompute_freqs_cis(1048576)
-    logger.info(f"Resizing DONE: {prev_freqs_cis_dim} -> {model.freqs_cis.shape} ")
+    # logger.info(f"Resizing model.freqs_cis to fit ctx_len ... ")
+    # prev_freqs_cis_dim = model.freqs_cis.shape
+    # model.recompute_freqs_cis(1048576)
+    # logger.info(f"Resizing DONE: {prev_freqs_cis_dim} -> {model.freqs_cis.shape} ")
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
     logger.info(
@@ -195,8 +197,10 @@ def test_generate(
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
-                    cp_buffers=[generated_tokens] + [m.freqs_cis for m in model_parts],
-                    cp_seq_dims=[1] + [0 for _ in model_parts],
+                    # cp_buffers=[generated_tokens] + [m.freqs_cis for m in model_parts],
+                    # cp_seq_dims=[1] + [0 for _ in model_parts],
+                    cp_buffers=[generated_tokens],
+                    cp_seq_dims=[1],
                     cp_no_restore_buffers={generated_tokens},
                     cp_rotate_method=config.experimental.context_parallel_rotate_method,
                 )
@@ -206,10 +210,10 @@ def test_generate(
 
             with train_context(optional_context_parallel_ctx):
                 logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
-                logits = model(generated_tokens)  # Generate logits
-                logger.info(f"Step {i}: logits shape = {logits.shape}")
+                output = model(generated_tokens)  # Generate logits
+                logger.info(f"Step {i}: logits shape = {output.logits.shape}")
 
-            new_token, _ = sample(logits, need_probs=True, temperature=temperature, top_k=top_k)
+            new_token, _ = sample(output.logits, need_probs=True, temperature=temperature, top_k=top_k)
             logger.info(f"Step {i}: new_token = {new_token}")
             new_tokens.append(new_token.item())
             generated_tokens = torch.cat([input_ids, torch.tensor(new_tokens, device=input_ids.device, dtype=input_ids.dtype).unsqueeze(0)], dim=1)
