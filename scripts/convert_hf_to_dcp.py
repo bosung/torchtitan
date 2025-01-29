@@ -22,6 +22,8 @@ model = LlavaOnevisionForConditionalGeneration.from_pretrained(
 # Save the distributed checkpoint
 output_dir = "./distributed_checkpoint"
 
-DCP.save({"model": model.state_dict}, storage_writer=DCP.filesystem.FileSystemWriter(output_dir, thread_count=8))
+#DCP.save({"model": model.state_dict()}, storage_writer=DCP.filesystem.FileSystemWriter(output_dir, thread_count=1))
+#DCP.save(model.state_dict(), storage_writer=DCP.filesystem.FileSystemWriter(output_dir, thread_count=1))
+DCP.save(model.state_dict(), checkpoint_id=output_dir)
 
 print(f"Distributed checkpoint saved at {output_dir}")
