@@ -12,6 +12,7 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 
+from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed import DeviceMesh
 from torch.distributed._composable.fsdp import (
     CPUOffloadPolicy,
@@ -103,6 +104,8 @@ def parallelize_llava(
 
         if job_config.training.enable_cpu_offload:
             logger.info("Applied CPU Offloading to the model")
+
+
     elif parallel_dims.dp_replicate_enabled:
         if world_mesh.ndim > 1:
             raise RuntimeError("DDP has not supported > 1D parallelism")
@@ -336,8 +339,22 @@ def apply_fsdp(
             **fsdp_config,
             reshard_after_forward=reshard_after_forward,
         )
-    fully_shard(model, **fsdp_config, reshard_after_forward=not pp_enabled)
+    fully_shard(model.language_model.model, **fsdp_config, reshard_after_forward=not pp_enabled)
+    # apply FSDP to vision_tower and multi_modal_projector
+    fully_shard(model.vision_tower,  **fsdp_config, reshard_after_forward=not pp_enabled)
+    fully_shard(model.multi_modal_projector,  **fsdp_config, reshard_after_forward=not pp_enabled)
 
+
+def apply_partial_fsdp(
+    module: nn.Module,
+    dp_mesh: DeviceMesh,
+    param_dtype: torch.dtype,
+    reduce_dtype: torch.dtype,
+    pp_enabled: bool,
+    cpu_offload: bool = False):
+    mp_policy = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=reduce_dtype)
+    fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
+    fully_shard(module, **fsdp_config, reshard_after_forward=not pp_enabled)
 
 def apply_ddp(
     model: nn.Module,

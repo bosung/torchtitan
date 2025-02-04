@@ -20,7 +20,8 @@ import torch.distributed.checkpoint as dcp
 import torch.nn as nn
 import torch.distributed as dist
 from torch.distributed import DeviceMesh
-from torch.distributed._tensor import Replicate
+#from torch.distributed._tensor import Replicate
+from torch.distributed.tensor import distribute_module, DTensor, Replicate, Shard
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
@@ -37,14 +38,17 @@ from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.parallelisms import ParallelDims
-from torchtitan.parallelisms.parallelize_llava import parallelize_llava
+from torchtitan.parallelisms.parallelize_llava import parallelize_llava, apply_partial_fsdp
 from torchtitan.parallelisms.pipeline_llama import pipeline_llama_manual_split
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
-from torchtitan.datasets.my_datasets import MyDataset
+from torchtitan.datasets.alfred_dataset import ALFREDDataset
 
-from transformers import AutoConfig, AutoProcessor, LlavaOnevisionForConditionalGeneration
+from transformers import AutoConfig, AutoProcessor
+from torchtitan.models.llava_onevision import LlavaOnevisionForConditionalGeneration
+from huggingface_hub import snapshot_download
+import gc
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -114,13 +118,20 @@ def test_generate(
     tokenizer = processor.tokenizer
 
     # build dataloader
-    my_ds = MyDataset(
-        tokenizer=tokenizer,
-        seq_len=ctx_len,
-        world_size=world_size,
-        rank=dp_rank,
-    )
-    data_loader = DPAwareDataLoader(dp_rank, my_ds, batch_size=batch_size)
+    if config.training.dataset == "alfred":
+        # need to download img files
+        img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
+        processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
+        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir)
+    else:
+        dataset = MyDataset(
+            tokenizer=tokenizer,
+            seq_len=ctx_len,
+            world_size=world_size,
+            rank=dp_rank,
+        )
+
+    data_loader = DPAwareDataLoader(dp_rank, dataset, batch_size=batch_size)
 
     # model
     # model_config = models_config[model_name][config.model.flavor]
@@ -134,6 +145,9 @@ def test_generate(
     with torch.device(init_device):
         logger.info(f"Init model on init_device: {init_device}")
         model = LlavaOnevisionForConditionalGeneration.from_pretrained(model_name)
+
+    # if config.training.dataset == "alfred":
+    #     model.resize_token_embeddings(len(processor.tokenizer))
 
     # apply parallelisms and initialization
     parallelize_llava(model, world_mesh, parallel_dims, config)
@@ -180,44 +194,132 @@ def test_generate(
     
     t0 = time.monotonic()
 
-    for batch in data_loader:
-        input_ids = batch.to(device)
+    from torch.distributed.tensor import distribute_tensor
 
-        generated_tokens = input_ids.clone()
+    for j, batch in enumerate(data_loader):
+
+        if isinstance(model.language_model.model.embed_tokens.weight, DTensor):
+            logger.info(f"111 {model.language_model.model.embed_tokens.weight.shape}, {type(model.language_model.model.embed_tokens.weight)}, {model.language_model.model.embed_tokens.weight.device_mesh}, {model.language_model.model.embed_tokens.weight.placements}")
+
+        # TODO: why there is one more dim? [1, 1, seq_len]
+        input_ids = batch.input_ids[0].to(device)
+
+        logger.info(f"Test id {j}: input_ids shape = {input_ids.shape}, {type(input_ids)}")
+
+        # TODO check placements
+        #input_ids = distribute_tensor(input_ids, world_mesh['dp_shard_cp'], placements=[Shard(1)])
+        # if hasattr(model.language_model.model.embed_tokens.weight, "device_mesh"):
+        input_ids = distribute_tensor(input_ids, world_mesh['dp_shard_cp'], placements=[Shard(0)])        
+        #input_ids = distribute_tensor(input_ids, world_mesh['dp_shard_cp'])
+        logger.info(f"Test id {j}: input_ids shape = {input_ids.shape}, {type(input_ids)}, {input_ids.device_mesh}, {input_ids.placements}")
+
+        pixel_values = batch.pixel_values[0].to(device)
+        #pixel_values = distribute_tensor(pixel_values, world_mesh['dp_shard_cp'])
+
+        # get context embeds (done in distributed)
+        with torch.no_grad():
+            context_embeds = model.embed(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_sizes=batch.image_sizes[0].to(device))
+
+        logger.info(f"222 language_model.model.embed_tokens: {model.language_model.model.embed_tokens.weight.shape} {type(model.language_model.model.embed_tokens.weight)}")
+
+        seq_len = input_ids.shape[-1]
+        #tensor_list = [torch.empty((1, seq_len, 3584 // world_size), device=device) for _ in range(world_size)]
+        tensor_list = [torch.empty_like(context_embeds) for _ in range(world_size)]
+        logger.info(f"context_embeds: {context_embeds.shape}, {type(context_embeds)}")
+        dist.all_gather(tensor_list, context_embeds)
+        logger.info(f"context_embeds: {context_embeds.shape}, {type(context_embeds)}")
+
+        logger.info(f"{len(tensor_list)}, {tensor_list[0].shape}")
+
+        context_embeds = torch.cat(tensor_list, dim=2)
+        logger.info(f"context_embeds: {context_embeds.shape}, {type(context_embeds)}")
+
+        inputs_embeds = context_embeds
+
+        del tensor_list, context_embeds, input_ids
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        if isinstance(model.language_model.model.embed_tokens.weight, DTensor):
+            model.language_model.model.embed_tokens.sharded_weight = model.language_model.model.embed_tokens.weight
+
         new_tokens = []
-
         max_new_tokens = 3
         for i in range(max_new_tokens):
-            seq_len = generated_tokens.shape[-1]
+            logger.info(f"model input: {inputs_embeds.shape}")
+            seq_len = inputs_embeds.shape[1]
             max_len = (seq_len // (world_size * 2)) * (world_size * 2)
-            logger.info(f"Input size: {generated_tokens.shape}, truncate: {max_len}")
-            generated_tokens = generated_tokens[:, :max_len]
-            logger.info(f"model input: {generated_tokens.shape}")
+            
+            # TODO saved truncated embeds and concat to the front if its length hits cp_degree
+            inputs_embeds = inputs_embeds[:, :max_len, :]
+            logger.info(f"Input size: {inputs_embeds.shape}, truncate: {max_len}")
 
-            optional_context_parallel_ctx = (
+            logger.info(f"{type(model.language_model.model.embed_tokens.weight)}")
+
+            context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
                     # cp_buffers=[generated_tokens] + [m.freqs_cis for m in model_parts],
                     # cp_seq_dims=[1] + [0 for _ in model_parts],
-                    cp_buffers=[generated_tokens],
+                    cp_buffers=[inputs_embeds],
                     cp_seq_dims=[1],
-                    cp_no_restore_buffers={generated_tokens},
+                    cp_no_restore_buffers={inputs_embeds},
                     cp_rotate_method=config.experimental.context_parallel_rotate_method,
                 )
                 if parallel_dims.cp_enabled
                 else None
             )
 
-            with train_context(optional_context_parallel_ctx):
-                logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
-                output = model(generated_tokens)  # Generate logits
-                logger.info(f"Step {i}: logits shape = {output.logits.shape}")
+            logger.info(f"333 language_model.model.embed_tokens: {model.language_model.model.embed_tokens.weight.shape} {type(model.language_model.model.embed_tokens.weight)}")
 
+            with torch.no_grad(), train_context(context_parallel_ctx):
+                logger.info(f"language_model.model.embed_tokens: {type(model.language_model.model.embed_tokens.weight)}")
+                logger.info(f"Step {i}: input_embeds shape = {inputs_embeds.shape}, type: {type(inputs_embeds)}")
+                output = model(inputs_embeds=inputs_embeds, num_logits_to_keep=1)
+                #output = model(inputs_embeds=inputs_embeds)
+                logger.info(f"Step {i}: logits shape = {output.logits.shape}, {type(output.logits)}")
+
+            
+            logger.info(f"444 language_model.model.embed_tokens: {model.language_model.model.embed_tokens.weight.shape} {type(model.language_model.model.embed_tokens.weight)}")
+
+            #if hasattr(model.language_model.model.embed_tokens, "sharded_weight"):
+            if not isinstance(model.language_model.model.embed_tokens.weight, DTensor):
+                model.language_model.model.embed_tokens.weight = model.language_model.model.embed_tokens.sharded_weight
+
+            logger.info(f"555 language_model.model.embed_tokens: {model.language_model.model.embed_tokens.weight.shape} {type(model.language_model.model.embed_tokens.weight)}")
+            
+            logger.info(f"{type(model.language_model.model.embed_tokens.weight)}")
             new_token, _ = sample(output.logits, need_probs=True, temperature=temperature, top_k=top_k)
-            logger.info(f"Step {i}: new_token = {new_token}")
-            new_tokens.append(new_token.item())
-            generated_tokens = torch.cat([input_ids, torch.tensor(new_tokens, device=input_ids.device, dtype=input_ids.dtype).unsqueeze(0)], dim=1)
-                    
+            logger.info(f"Step {i}: new_token = {new_token}, {type(new_token)}")
+            new_tokens.append(new_token)
+
+            del output
+
+            with torch.no_grad():
+                if not isinstance(new_token, DTensor):
+                    new_token = distribute_tensor(new_token, placements=[Replicate()])
+                new_tokens_emb = model.embed(input_ids=new_token.unsqueeze(0))
+            logger.info(f"Step {i}: new_tokens_emb shape = {new_tokens_emb.shape}, {type(new_tokens_emb)}")
+            logger.info(f"Step {i}: input_embeds, {inputs_embeds.shape}, {type(inputs_embeds)}")
+
+            if isinstance(new_tokens_emb, DTensor):
+                new_tokens_emb = new_tokens_emb.to_local()
+            
+            tensor_list = [torch.empty(inputs_embeds.shape, device=device) for _ in range(world_size)]
+            dist.all_gather(tensor_list, inputs_embeds)
+            inputs_embeds = torch.cat(tensor_list + [new_tokens_emb] , dim=1)
+            
+            logger.info(f"Step {i}: input_embeds, {inputs_embeds.shape}, {type(inputs_embeds)}")
+            logger.info(f"{type(model.language_model.model.embed_tokens.weight)}")
+
+            del tensor_list
+            gc.collect()
+            torch.cuda.empty_cache()
+
     t1 = time.monotonic()
     elapsed_sec = t1 - t0
 
