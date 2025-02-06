@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.utils.checkpoint
 from torch import nn
-from torch.distributed.tensor import distribute_tensor
+from torch.distributed.tensor import distribute_tensor, DTensor
 
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
@@ -551,7 +551,6 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
 
             # unpad extra patches and concatenate them
             if pixel_values.dim() == 5: # pixel_values: torch.Size([n_img, 2, 3, 384, 384])
-                logger.info(f"pixel_values: {pixel_values.shape}, image_num_patches: {len(image_num_patches)}, {image_num_patches[:20]}")
                 # -- Error iterating over DTensor.
                 # NotImplementedError: Operator aten.select.int does not have a sharding strategy registered.
                 _pixel_values_list = [
@@ -562,11 +561,9 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             elif pixel_values.dim() != 4:
                 raise ValueError(f"pixel_values of shape {pixel_values.shape}, expect to be of 4 or 5 dimensions")
 
-            # OOM: sharding for vision_tower
-            logger.info(f"pixel_values: {pixel_values.shape}")
+            # may cause OOM in vision tower: sharding for vision_tower
             if hasattr(self.vision_tower, 'device_mesh') and not hasattr(pixel_values, 'device_mesh'):
                 pixel_values = distribute_tensor(pixel_values, self.vision_tower.mesh, placements=[torch.distributed._tensor.Shard(3)])
-                #pixel_values = distribute_tensor(pixel_values, self.vision_tower.mesh)
 
             image_features = self.vision_tower(pixel_values, output_hidden_states=True)
             selected_image_feature = image_features.hidden_states[vision_feature_layer]
@@ -592,37 +589,24 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
                 .to(inputs_embeds.device)
             )
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-
-            #if hasattr(special_image_mask, 'device_mesh'):
+            #inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+            
+            ######################## distributed ver #######################
             # redistribute mask
-            special_image_mask = special_image_mask.redistribute(placements=inputs_embeds.placements)
+            if isinstance(special_image_mask, DTensor) and isinstance(inputs_embeds, DTensor):
+                special_image_mask = special_image_mask.redistribute(placements=inputs_embeds.placements)
 
-            if not hasattr(image_features, 'device_mesh'):
-                # probably unsqueeze(0) ?
+            if isinstance(inputs_embeds, DTensor) and not isinstance(image_features, DTensor):
                 image_features = distribute_tensor(image_features.unsqueeze(0), inputs_embeds.device_mesh, placements=inputs_embeds.placements)
 
-            logger.info(f"inputs_embeds: {inputs_embeds.shape}, {hasattr(inputs_embeds, 'device_mesh')}, {inputs_embeds.device_mesh}")
-            logger.info(f"special_image_mask: {special_image_mask.shape}, {hasattr(special_image_mask, 'device_mesh')}, {special_image_mask.device_mesh}")
-            logger.info(f"image_features: {image_features.shape}, {hasattr(image_features, 'device_mesh')}")
-
             # inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-            # NotImplementedError: Operator aten.masked_scatter.default does not have a sharding strategy registered.
+            #   -> NotImplementedError: Operator aten.masked_scatter.default does not have a sharding strategy registered.
             # do locally
-            local_inputs_embeds = inputs_embeds.to_local()
-            local_special_image_mask = special_image_mask.to_local()
-            #special_image_mask.to_local()
-            #image_features.to_local()
-            logger.info(f"local_inputs_embeds: {local_inputs_embeds.shape}, {hasattr(local_inputs_embeds, 'device_mesh')}")
-            logger.info(f"local_special_image_mask: {local_special_image_mask.shape}, {hasattr(local_special_image_mask, 'device_mesh')}")
+            local_inputs_embeds = inputs_embeds.to_local() if isinstance(inputs_embeds, DTensor) else inputs_embeds
+            local_special_image_mask = special_image_mask.to_local() if isinstance(special_image_mask, DTensor) else special_image_mask
+            local_image_features = image_features.to_local() if isinstance(image_features, DTensor) else image_features
 
-            local_inputs_embeds.masked_scatter(local_special_image_mask, image_features.to_local())
-
-            inputs_embeds = local_inputs_embeds
-            # re-distribute
-            #inputs_embeds = distribute_tensor(local_inputs_embeds, inputs_embeds.device_mesh, placements=inputs_embeds.placements)
-            #inputs_embeds = inputs_embeds.redistribute(placements=[torch.distributed._tensor.Replicate()] * inputs_embeds.device_mesh.ndim)
-            #logger.info(f"inputs_embeds: {inputs_embeds.shape}, {hasattr(inputs_embeds, 'device_mesh')}, {inputs_embeds.device_mesh}, {inputs_embeds.placements}")
-
+            inputs_embeds = local_inputs_embeds.masked_scatter(local_special_image_mask, local_image_features)
 
         # Video are simply embedded and further pooled to decrease seq len
         if pixel_values_videos is not None:
@@ -827,7 +811,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             )
             video_features = video_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_video_mask, video_features)
-
+            
         outputs = self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,

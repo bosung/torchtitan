@@ -42,7 +42,7 @@ from torchtitan.parallelisms.pipeline_llama import pipeline_llama_manual_split
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
-from torchtitan.datasets.my_datasets import MyDataset
+from torchtitan.datasets.long_context_datasets import MyDataset
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -277,7 +277,7 @@ def test_generate(
             max_len = (seq_len // (world_size * 2)) * (world_size * 2)
             logger.info(f"Input size: {generated_tokens.shape}, truncate: {max_len}")
             generated_tokens = generated_tokens[:, :max_len]
-            logger.info(f"model input: {generated_tokens.shape}")
+            logger.info(f"model input: {generated_tokens.shape}, {type(generated_tokens)}")
 
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
@@ -292,7 +292,7 @@ def test_generate(
             )
 
             with train_context(optional_context_parallel_ctx):
-                logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}")
+                logger.info(f"Step {i}: generated_tokens shape = {generated_tokens.shape}, {type(generated_tokens)}")
                 logits = model(generated_tokens)  # Generate logits
                 logger.info(f"Step {i}: logits shape = {logits.shape}")
 
