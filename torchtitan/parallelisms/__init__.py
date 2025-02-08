@@ -7,6 +7,7 @@
 
 from torchtitan.parallelisms.parallel_dims import ParallelDims
 from torchtitan.parallelisms.parallelize_llama import parallelize_llama
+from torchtitan.parallelisms.parallelize_llava import parallelize_llava
 from torchtitan.parallelisms.pipeline_llama import pipeline_llama
 
 
@@ -18,6 +19,7 @@ __all__ = [
 
 models_parallelize_fns = {
     "llama3": parallelize_llama,
+    "llava-hf/llava-onevision-qwen2-7b-ov-hf": parallelize_llava,
 }
 models_pipelining_fns = {
     "llama3": pipeline_llama,

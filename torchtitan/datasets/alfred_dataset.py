@@ -47,12 +47,17 @@ class ALFREDDataset(IterableDataset, Stateful):
         world_size: int = 1,
         rank: int = 0,
         infinite: bool = False,
+        ignore_index: int = -100,
+        eval: bool = False
     ) -> None:
         self.dataset_name = "alfred"
        
         self.processor = processor
         self.seq_len = seq_len
         self.infinite = infinite
+        self.act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
+        self.ignore_index = ignore_index
+        self.eval = eval
         
         self.split = split
 
@@ -85,7 +90,52 @@ class ALFREDDataset(IterableDataset, Stateful):
         for traj in self.traj_data:
             print(f"Loading example ... ")
             sample = self._load_sample(traj)
-            yield self.processor(images=sample['img_list'], text=sample['lang_input'], return_tensors="pt")
+            # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
+            output = self.processor(images=sample['img_list'], text=sample['lang_input'], return_tensors="pt")
+
+            if self.eval:
+                yield output
+
+            labels = output.input_ids.clone()
+
+            act_tok = False
+            for i, l in enumerate(labels[0]):
+                if (not act_tok) and l == self.act_tok_id: # 151648
+                    act_tok = True
+                    continue
+                
+                if (not act_tok) and l != self.act_tok_id:
+                    labels[0][i] = self.ignore_index
+
+                if act_tok and l == self.act_tok_id:
+                    act_tok = False
+            
+            input_ids = output.input_ids[:, :-1]
+            labels = labels[:, 1:]
+            # TODO: check the labels
+
+            logger.info(f"{input_ids[0][:30]}")
+            logger.info(f"{labels[0][:30]}")
+
+            logger.info(f"input_ids: {input_ids.shape}, {input_ids.dtype}, {input_ids.device}")
+            logger.info(f"pixel_values: {output.pixel_values.shape}, {output.pixel_values.dtype}, {output.pixel_values.device}")
+            logger.info(f"image_sizes: {output.image_sizes.shape}, {output.image_sizes.dtype}, {output.image_sizes.device}")
+            logger.info(f"labels: {labels.shape}, {labels.dtype}, {labels.device}")
+
+            # TODO: how does batch work for pixel_values and image_sizes ...
+            # input_ids: torch.Size([1, 382181]), torch.int64, cpu
+            # pixel_values: torch.Size([267, 2, 3, 384, 384]), torch.float32, cpu
+            # image_sizes: torch.Size([267, 2]), torch.int64, cpu
+            # labels: torch.Size([1, 382181]), torch.int64, cpu
+            # these will be unsqueezed when making a batch
+             
+            yield {
+                'input_ids': input_ids,
+                #'attention_mask': output.attention_mask,
+                'pixel_values': output.pixel_values, 
+                'image_sizes': output.image_sizes,
+                'labels': labels,
+            }
 
     def _load_sample(self, traj):
         traj = json.loads(traj['text'])

@@ -11,11 +11,12 @@ from datetime import timedelta
 import torch
 
 from torch.distributed.elastic.multiprocessing.errors import record
+import torch.distributed.checkpoint as dcp
 
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets import build_hf_data_loader, build_tokenizer
+from torchtitan.datasets import build_hf_data_loader, build_tokenizer, build_hf_processor
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
@@ -28,7 +29,7 @@ from torchtitan.parallelisms import (
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
-
+from huggingface_hub import snapshot_download
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -81,19 +82,34 @@ def main(job_config: JobConfig):
     )
     model_name = job_config.model.name
 
-    # build tokenizer
-    tokenizer_type = model_name_to_tokenizer[model_name]
-    tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
-    # build dataloader
-    data_loader = build_hf_data_loader(
-        job_config.training.dataset,
-        job_config.training.dataset_path,
-        tokenizer,
-        job_config.training.batch_size,
-        job_config.training.seq_len,
-        dp_degree,
-        dp_rank,
-    )
+    if job_config.training.dataset == "alfred":
+        processor = build_hf_processor(model_name)
+        tokenizer = processor.tokenizer
+        img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
+        processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
+
+        # TODO make fancier
+        from torchtitan.datasets.hf_datasets import DPAwareDataLoader
+        from torchtitan.datasets.alfred_dataset import ALFREDDataset
+        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir)
+        data_loader = DPAwareDataLoader(dp_rank, dataset, 
+                                        batch_size=job_config.training.batch_size,
+                                        world_size=world_size)
+        
+    else:
+        # build tokenizer
+        tokenizer_type = model_name_to_tokenizer[model_name]
+        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+        # build dataloader
+        data_loader = build_hf_data_loader(
+            job_config.training.dataset,
+            job_config.training.dataset_path,
+            tokenizer,
+            job_config.training.batch_size,
+            job_config.training.seq_len,
+            dp_degree,
+            dp_rank,
+        )
 
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
@@ -103,12 +119,25 @@ def main(job_config: JobConfig):
     # 2. vocab size from tokenizer
     # 3. max_seq_len base on inputs
     model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = tokenizer.n_words
+    model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
     model_config.max_seq_len = job_config.training.seq_len
+
+    model_dtype = torch.bfloat16
+
+    if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
+        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+        buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
+        del model
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
-        model = model_cls.from_model_args(model_config)
+        if 'llava' in model_name:
+            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+        else:
+            model = model_cls.from_model_args(model_config)
+
+    if job_config.training.dataset == "alfred":
+        model.resize_token_embeddings(len(processor.tokenizer))
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -117,11 +146,11 @@ def main(job_config: JobConfig):
 
     # log model size
     model_param_count = utils.get_num_params(model)
-    num_flop_per_token = utils.get_num_flop_per_token(
-        utils.get_num_params(model, exclude_embedding=True),
-        model_config,
-        job_config.training.seq_len,
-    )
+    # num_flop_per_token = utils.get_num_flop_per_token(
+    #     utils.get_num_params(model),
+    #     model_config,
+    #     job_config.training.seq_len,
+    # )
     logger.info(
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
@@ -171,8 +200,25 @@ def main(job_config: JobConfig):
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
         models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
+        from torch.distributed.checkpoint import DefaultLoadPlanner
+        checkpoint_path = 'distributed_checkpoint/'
+        state_dict = {"model": model.state_dict()}
         with torch.no_grad():
-            model.init_weights(buffer_device=buffer_device)
+            # model.init_weights(buffer_device=buffer_device)
+            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=DefaultLoadPlanner(allow_partial_load=True))
+            # Restore buffers
+            for name, buffer in buffers_dict.items():
+                model.register_buffer(name, buffer.to(device_type))
+
+        # state_dict = {"model": model.state_dict()}
+        # # Checkpoint Loading
+        # from torch.distributed.checkpoint import DefaultLoadPlanner
+        # checkpoint_path = 'distributed_checkpoint/'
+        # begin = time.monotonic()
+        # logger.info(f"Loading chkpt at: {checkpoint_path}")
+        # dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=DefaultLoadPlanner(allow_partial_load=True))
+        # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+
         model.train()
 
         model_parts = [model]
@@ -261,7 +307,7 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-            input_ids, labels = batch
+            input_ids, labels = batch['input_ids'][0], batch['labels'][0]
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
@@ -306,11 +352,14 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    pred = model(input_ids)
-                    loss = loss_fn(pred, labels)
+                    output = model(input_ids,
+                                pixel_values=batch['pixel_values'][0].to(device_type, model_dtype),
+                                image_sizes=batch['image_sizes'][0].to(device_type, model_dtype),
+                    )
+                    loss = loss_fn(output.logits, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
-                    del pred
+                    del output
                     loss.backward()
 
             # clip gradients
@@ -362,7 +411,7 @@ def main(job_config: JobConfig):
                 # model FLOPS utilization
                 # For its definition and calculation, please refer to the PaLM paper:
                 # https://arxiv.org/abs/2204.02311
-                mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
+                # mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
 
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
@@ -374,7 +423,7 @@ def main(job_config: JobConfig):
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
                     "throughput(tps)": tps,
-                    "mfu(%)": mfu,
+                    # "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
                     "time_metrics/data_loading(%)": time_data_loading_pct,
@@ -393,7 +442,7 @@ def main(job_config: JobConfig):
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}tps: {round(tps):,}  "
-                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    # f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
                 ntokens_since_last_log = 0

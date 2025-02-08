@@ -133,7 +133,7 @@ class WandBLogger(BaseLogger):
         self.tag = tag
 
         self.wandb.init(
-            project="torchtitan",
+            project="alfred-long",
             dir=log_dir,
         )
         logger.info("WandB logging enabled")
