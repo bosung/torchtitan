@@ -36,6 +36,15 @@ def extract_and_convert_tar(tar_path):
     return pil_images
 
 
+def pad_to_multiple(tensor, multiple=4, pad_token=0):
+    length = tensor.shape[1]
+    pad_length = (multiple - (length % multiple)) % multiple
+    if pad_length > 0:
+        pad_tensor = torch.full((tensor.shape[0], pad_length), pad_token, dtype=tensor.dtype)
+        tensor = torch.cat([tensor, pad_tensor], dim=1)
+    return tensor
+
+
 class ALFREDDataset(IterableDataset, Stateful):
 
     def __init__(
@@ -43,7 +52,7 @@ class ALFREDDataset(IterableDataset, Stateful):
         processor,
         img_data_dir,
         split: str = "train",
-        seq_len: int = 2048,
+        max_seq_len: int = 131072,
         world_size: int = 1,
         rank: int = 0,
         infinite: bool = False,
@@ -53,11 +62,15 @@ class ALFREDDataset(IterableDataset, Stateful):
         self.dataset_name = "alfred"
        
         self.processor = processor
-        self.seq_len = seq_len
+        self.max_seq_len = max_seq_len
         self.infinite = infinite
         self.act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
+        self.eos_tok_id = processor.tokenizer.eos_token_id
         self.ignore_index = ignore_index
         self.eval = eval
+
+        if not self.eval:
+            self.max_seq_len = 131072
         
         self.split = split
 
@@ -88,106 +101,144 @@ class ALFREDDataset(IterableDataset, Stateful):
 
     def __iter__(self):
         for traj in self.traj_data:
-            print(f"Loading example ... ")
-            sample = self._load_sample(traj)
-            # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
-            output = self.processor(images=sample['img_list'], text=sample['lang_input'], return_tensors="pt")
+            print(f"Loading a new example ... ")
+            chunks = self._load_sample(traj, chunk=True)
 
-            if self.eval:
-                yield output
+            if not isinstance(chunks, list):
+                chunks = [chunks]
 
-            labels = output.input_ids.clone()
+            for ci, chunk in enumerate(chunks):
+                # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
+                output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
 
-            act_tok = False
-            for i, l in enumerate(labels[0]):
-                if (not act_tok) and l == self.act_tok_id: # 151648
-                    act_tok = True
-                    continue
+                if self.eval:
+                    yield output
+
+                labels = output.input_ids.clone()
+
+                act_tok = False
+                for i, l in enumerate(labels[0]):
+                    if (not act_tok) and l == self.act_tok_id: # 151648
+                        act_tok = True
+                        continue
+                    
+                    if (not act_tok) and l != self.act_tok_id:
+                        labels[0][i] = self.ignore_index
+
+                    if act_tok and l == self.act_tok_id:
+                        act_tok = False
                 
-                if (not act_tok) and l != self.act_tok_id:
-                    labels[0][i] = self.ignore_index
+                input_ids = output.input_ids[:, :-1]
+                labels = labels[:, 1:]
 
-                if act_tok and l == self.act_tok_id:
-                    act_tok = False
-            
-            input_ids = output.input_ids[:, :-1]
-            labels = labels[:, 1:]
-            # TODO: check the labels
+                logger.info(f"{input_ids[0][:30]}")
+                logger.info(f"{labels[0][:30]}")
 
-            logger.info(f"{input_ids[0][:30]}")
-            logger.info(f"{labels[0][:30]}")
+                logger.info(f"Chunk-{ci} input_ids: {input_ids.shape}, {input_ids.dtype}, {input_ids.device}")
+                logger.info(f"Chunk-{ci} pixel_values: {output.pixel_values.shape}, {output.pixel_values.dtype}, {output.pixel_values.device}")
+                logger.info(f"Chunk-{ci} image_sizes: {output.image_sizes.shape}, {output.image_sizes.dtype}, {output.image_sizes.device}")
+                logger.info(f"Chunk-{ci} labels: {labels.shape}")
 
-            logger.info(f"input_ids: {input_ids.shape}, {input_ids.dtype}, {input_ids.device}")
-            logger.info(f"pixel_values: {output.pixel_values.shape}, {output.pixel_values.dtype}, {output.pixel_values.device}")
-            logger.info(f"image_sizes: {output.image_sizes.shape}, {output.image_sizes.dtype}, {output.image_sizes.device}")
-            logger.info(f"labels: {labels.shape}, {labels.dtype}, {labels.device}")
+                yield {
+                    'input_ids': pad_to_multiple(input_ids, pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
+                    'pixel_values': output.pixel_values, 
+                    'image_sizes': output.image_sizes,
+                    'labels': pad_to_multiple(labels, pad_token=self.ignore_index),
+                }
 
-            # TODO: how does batch work for pixel_values and image_sizes ...
-            # input_ids: torch.Size([1, 382181]), torch.int64, cpu
-            # pixel_values: torch.Size([267, 2, 3, 384, 384]), torch.float32, cpu
-            # image_sizes: torch.Size([267, 2]), torch.int64, cpu
-            # labels: torch.Size([1, 382181]), torch.int64, cpu
-            # these will be unsqueezed when making a batch
-             
-            yield {
-                'input_ids': input_ids,
-                #'attention_mask': output.attention_mask,
-                'pixel_values': output.pixel_values, 
-                'image_sizes': output.image_sizes,
-                'labels': labels,
-            }
-
-    def _load_sample(self, traj):
+    def _load_sample(self, traj, chunk=True):
         traj = json.loads(traj['text'])
-        input_seq = self.seq_preprocess(traj)
-        
+        chunk_seq_list, chunk_img_idx = self.seq_preprocess(traj)
+
         img_tar_file = traj['img_tar']
         traj_imgs = set([x['image_name'].split(".")[0] for x in traj['images']])
         tar_file = os.path.join(self.img_data_dir, img_tar_file)
 
         img_list = extract_and_convert_tar(tar_file)
-        
-        return {
-            'lang_input': input_seq,
-            'img_list': img_list,
-            'task_goal': traj['turk_annotations']['anns'][0]['task_desc'],
-            'traj': traj,
-        }
+
+        chunks = []
+
+        for input_seq, (img_start, img_end) in zip(chunk_seq_list, chunk_img_idx):
+            chunks.append({
+                'lang_input': input_seq,
+                'img_list': img_list[img_start:img_end],
+                'task_goal': traj['turk_annotations']['anns'][0]['task_desc'],
+                'traj': traj,
+            })
+
+        return chunks
 
     def _load_traj_data(self):
         # self.traj_data = [x for x in load_dataset("bosungkim/alfred-small-traj", split=self.split)]
         self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
 
     def seq_preprocess(self, traj):
+        
         # with high_pddl
         input_seq = "Your Main Goal: "
         if 'turk_annotations' in traj:
             input_seq += traj['turk_annotations']['anns'][0]['task_desc']
         # else we need to use templated desc .. later
+        main_goal_str = input_seq
+        n_main_goal_tokens = len(self.processor(text=main_goal_str).input_ids)
 
         # low_idx_to_image
         low_idx_2_image = defaultdict(list)
         for im_info in traj['images']:
             low_idx_2_image[im_info['low_idx']].append(im_info['image_name'])
-
+        
         cur_high_idx = -1
 
+        chunk_seq_list = []
+        chunk_img_idx = []
+
+        chunk_seq = main_goal_str
+        n_chunk_tokens = n_main_goal_tokens # for chunking
+        n_chunk_img = 0
+        img_start_idx = 0
         for low_idx, low_act in enumerate(traj['plan']['low_actions']):
-            
+            low_act_seq = ""
+            n_low_act_tokens = 0
+
             if low_act['high_idx'] > cur_high_idx:
-                input_seq += f" Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][low_act['high_idx']])}"
+                plan_str = f" Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][low_act['high_idx']])}"
+                input_seq += plan_str
+                low_act_seq += plan_str
+                n_low_act_tokens += len(self.processor(text=plan_str).input_ids)
                 cur_high_idx = low_act['high_idx']
 
-            input_seq += f" {self.serialize_action(low_act['api_action'])}"
+            action_str = self.serialize_action(low_act['api_action'])
+            input_seq += f" {action_str}"
+            low_act_seq += f" {action_str}"
+            n_low_act_tokens += len(self.processor(text=action_str).input_ids)
 
             for imgfile in low_idx_2_image[low_idx]:
                 input_seq += " <image>"
+                low_act_seq += " <image>"
+                n_low_act_tokens += 1485 # one frame is 1485 tokens
 
-            # if low_idx == 20:
-            #     break
-        print(input_seq)
+            if (n_chunk_tokens + n_low_act_tokens) >= self.max_seq_len:
+                chunk_seq_list.append(chunk_seq)
+                chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
 
-        return input_seq
+                # reset for next chunk
+                chunk_seq = main_goal_str + low_act_seq
+                n_chunk_tokens = n_main_goal_tokens + n_low_act_tokens
+                img_start_idx = img_start_idx + n_chunk_img 
+            else:
+                chunk_seq += low_act_seq
+                n_chunk_tokens += n_low_act_tokens
+                n_chunk_img += len(low_idx_2_image[low_idx])
+
+        chunk_seq_list.append(chunk_seq)
+        chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
+            
+        logger.info(f"Original input_seq: {input_seq}")
+        #logger.info(f"Original input_tokens size: {n_tokens}")
+
+        logger.info(f"# Chunks: {len(chunk_seq_list)}")
+
+        return chunk_seq_list, chunk_img_idx
 
     def serialize_action(self, act):
         template = self.act_template[act['action']]

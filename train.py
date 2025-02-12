@@ -12,6 +12,8 @@ import torch
 
 from torch.distributed.elastic.multiprocessing.errors import record
 import torch.distributed.checkpoint as dcp
+import torch.distributed as dist
+from torch.distributed.tensor import distribute_module, distribute_tensor, DTensor, Replicate, Shard
 
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
@@ -30,6 +32,16 @@ from torchtitan.parallelisms import (
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.utils import device_module, device_type
 from huggingface_hub import snapshot_download
+
+
+def set_nested_attr(obj, name, value):
+    """since model.register_buffer() doesn't work on module names with '.',
+       manually set a neste attribute for buffers"""
+    parts = name.split('.')
+    for part in parts[:-1]:
+        obj = getattr(obj, part)
+    setattr(obj, parts[-1], value)
+
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -88,7 +100,7 @@ def main(job_config: JobConfig):
         img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
         processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
 
-        # TODO make fancier
+        # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.hf_datasets import DPAwareDataLoader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset
         dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir)
@@ -200,27 +212,16 @@ def main(job_config: JobConfig):
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
         models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
-        from torch.distributed.checkpoint import DefaultLoadPlanner
         checkpoint_path = 'distributed_checkpoint/'
         state_dict = {"model": model.state_dict()}
         with torch.no_grad():
             # model.init_weights(buffer_device=buffer_device)
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=DefaultLoadPlanner(allow_partial_load=True))
+            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
             # Restore buffers
             for name, buffer in buffers_dict.items():
-                model.register_buffer(name, buffer.to(device_type))
-
-        # state_dict = {"model": model.state_dict()}
-        # # Checkpoint Loading
-        # from torch.distributed.checkpoint import DefaultLoadPlanner
-        # checkpoint_path = 'distributed_checkpoint/'
-        # begin = time.monotonic()
-        # logger.info(f"Loading chkpt at: {checkpoint_path}")
-        # dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=DefaultLoadPlanner(allow_partial_load=True))
-        # logger.info(f"Finished loading chkpt in {time.monotonic() - begin:.2f} seconds.")
+                set_nested_attr(model, name, buffer.to(device_type))
 
         model.train()
-
         model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -352,10 +353,22 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    output = model(input_ids,
-                                pixel_values=batch['pixel_values'][0].to(device_type, model_dtype),
-                                image_sizes=batch['image_sizes'][0].to(device_type, model_dtype),
-                    )
+                    pixel_values=batch['pixel_values'][0].to(device_type, model_dtype)
+                    image_sizes=batch['image_sizes'][0].to(device_type, model_dtype)
+
+                    with torch.no_grad():
+                        inputs_embeds = model.embed(
+                            input_ids=input_ids,
+                            pixel_values=pixel_values,
+                            image_sizes=image_sizes)
+                    logger.info(f"inputs_embeds: {inputs_embeds.shape}, {type(inputs_embeds)}")
+                    
+                    del input_ids, pixel_values, image_sizes
+
+                    # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
+                    inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['tp'], placements=[Shard(1)])
+
+                    output = model(inputs_embeds=inputs_embeds)
                     loss = loss_fn(output.logits, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory

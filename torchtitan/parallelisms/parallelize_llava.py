@@ -130,20 +130,26 @@ def apply_tp(
     # 2. Parallelize the root norm layer over the sequence dim
     # 3. Parallelize the final linear output layer
     parallelize_module(
-        model,
+        model.language_model.model,
+        tp_mesh,
+        {   # cannot parallelize bc of image features
+            # "embed_tokens": RowwiseParallel( 
+            #     input_layouts=Replicate(),
+            #     output_layouts=Shard(1),
+            # ),
+            "norm": SequenceParallel(),
+        },
+    )
+    parallelize_module(
+        model.language_model,
         tp_mesh,
         {
-            "tok_embeddings": RowwiseParallel(
-                input_layouts=Replicate(),
-                output_layouts=Shard(1),
-            ),
-            "norm": SequenceParallel(),
-            "output": ColwiseParallel(
+            "lm_head": ColwiseParallel(
                 input_layouts=Shard(1),
                 output_layouts=Shard(-1) if loss_parallel else Replicate(),
                 use_local_output=not loss_parallel,
             ),
-        },
+        }
     )
 
     # Parallel styles used for transformer block linear weights and their
@@ -176,24 +182,26 @@ def apply_tp(
     #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
     for layer_id, transformer_block in enumerate(model.language_model.model.layers):
         layer_plan = {
-            "attention_norm": SequenceParallel(),
-            "attention": prepare_module_input(
-                input_layouts=(Shard(1), None),
-                desired_input_layouts=(Replicate(), None),
+            "input_layernorm": SequenceParallel(),
+            "self_attn": prepare_module_input(
+                input_kwarg_layouts={"hidden_states": Shard(1)},
+                desired_input_kwarg_layouts={"hidden_states": Replicate()}
             ),
-            "attention.wq": colwise_parallel(),
-            "attention.wk": colwise_parallel(),
-            "attention.wv": colwise_parallel(),
-            "attention.wo": rowwise_parallel(output_layouts=Shard(1)),
-            "ffn_norm": SequenceParallel(),
-            "feed_forward": prepare_module_input(
+            "self_attn.q_proj": colwise_parallel(),
+            "self_attn.k_proj": colwise_parallel(),
+            "self_attn.v_proj": colwise_parallel(),
+            "self_attn.o_proj": rowwise_parallel(),
+            "mlp": prepare_module_input(
                 input_layouts=(Shard(1),),
                 desired_input_layouts=(Replicate(),),
             ),
-            "feed_forward.w1": colwise_parallel(),
-            "feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
-            "feed_forward.w3": colwise_parallel(),
+            "mlp.gate_proj": colwise_parallel(),
+            "mlp.up_proj": colwise_parallel(),
+            "mlp.down_proj": rowwise_parallel(),
+            "post_attention_layernorm": SequenceParallel(),
         }
+        if layer_id == 0:
+            logger.info(transformer_block)
 
         parallelize_module(
             module=transformer_block,
@@ -339,7 +347,7 @@ def apply_fsdp(
             **fsdp_config,
             reshard_after_forward=reshard_after_forward,
         )
-    fully_shard(model.language_model.model, **fsdp_config, reshard_after_forward=not pp_enabled)
+    #fully_shard(model.language_model.model, **fsdp_config, reshard_after_forward=not pp_enabled)
     # apply FSDP to vision_tower and multi_modal_projector
     fully_shard(model.vision_tower,  **fsdp_config, reshard_after_forward=not pp_enabled)
     fully_shard(model.multi_modal_projector,  **fsdp_config, reshard_after_forward=not pp_enabled)
