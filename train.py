@@ -11,36 +11,19 @@ from datetime import timedelta
 import torch
 
 from torch.distributed.elastic.multiprocessing.errors import record
-import torch.distributed.checkpoint as dcp
-import torch.distributed as dist
-from torch.distributed.tensor import distribute_module, distribute_tensor, DTensor, Replicate, Shard
 
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets import build_hf_data_loader, build_tokenizer, build_hf_processor
+from torchtitan.datasets import build_hf_data_loader, build_tokenizer
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
-from torchtitan.optimizer import build_lr_schedulers, build_optimizers
-from torchtitan.parallelisms import (
-    models_parallelize_fns,
-    models_pipelining_fns,
-    ParallelDims,
-)
+from torchtitan.models import model_name_to_tokenizer
+from torchtitan.parallelisms import ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torchtitan.utils import device_module, device_type
-from huggingface_hub import snapshot_download
-
-
-def set_nested_attr(obj, name, value):
-    """since model.register_buffer() doesn't work on module names with '.',
-       manually set a neste attribute for buffers"""
-    parts = name.split('.')
-    for part in parts[:-1]:
-        obj = getattr(obj, part)
-    setattr(obj, parts[-1], value)
+from torchtitan.train_spec import get_train_spec
+from torchtitan.utils import device_module, device_type, import_module_from_path
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -48,6 +31,9 @@ def set_nested_attr(obj, name, value):
 def main(job_config: JobConfig):
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
+
+    if job_config.experimental.custom_model_path:
+        import_module_from_path(job_config.experimental.custom_model_path)
 
     if job_config.job.print_args:
         logger.info(f"Running with args: {job_config.to_dict()}")
@@ -92,64 +78,38 @@ def main(job_config: JobConfig):
     utils.set_determinism(
         world_mesh, device, job_config.training.seed, job_config.training.deterministic
     )
-    model_name = job_config.model.name
+    train_spec = get_train_spec(job_config.model.name)
 
-    if job_config.training.dataset == "alfred":
-        processor = build_hf_processor(model_name)
-        tokenizer = processor.tokenizer
-        img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
-        processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
-
-        # TODO incorporate with build_hf_data_loader
-        from torchtitan.datasets.hf_datasets import DPAwareDataLoader
-        from torchtitan.datasets.alfred_dataset import ALFREDDataset
-        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir)
-        data_loader = DPAwareDataLoader(dp_rank, dataset, 
-                                        batch_size=job_config.training.batch_size,
-                                        world_size=world_size)
-        
-    else:
-        # build tokenizer
-        tokenizer_type = model_name_to_tokenizer[model_name]
-        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
-        # build dataloader
-        data_loader = build_hf_data_loader(
-            job_config.training.dataset,
-            job_config.training.dataset_path,
-            tokenizer,
-            job_config.training.batch_size,
-            job_config.training.seq_len,
-            dp_degree,
-            dp_rank,
-        )
+    # build tokenizer
+    tokenizer_type = model_name_to_tokenizer[train_spec.name]
+    tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+    # build dataloader
+    data_loader = build_hf_data_loader(
+        job_config.training.dataset,
+        job_config.training.dataset_path,
+        tokenizer,
+        job_config.training.batch_size,
+        job_config.training.seq_len,
+        dp_degree,
+        dp_rank,
+    )
 
     # build model (using meta init)
-    model_cls = model_name_to_cls[model_name]
-    model_config = models_config[model_name][job_config.model.flavor]
+    model_cls = train_spec.cls
+    model_config = train_spec.config[job_config.model.flavor]
     # set the model configs from training inputs:
     # 1. norm type to decide which norm layer to use
     # 2. vocab size from tokenizer
     # 3. max_seq_len base on inputs
     model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
+    model_config.vocab_size = tokenizer.n_words
     model_config.max_seq_len = job_config.training.seq_len
 
-    model_dtype = torch.bfloat16
-
-    if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
-        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
-        buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
-        del model
-
-    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+    logger.info(
+        f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
+    )
     with torch.device("meta"):
-        if 'llava' in model_name:
-            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
-        else:
-            model = model_cls.from_model_args(model_config)
-
-    if job_config.training.dataset == "alfred":
-        model.resize_token_embeddings(len(processor.tokenizer))
+        model = model_cls.from_model_args(model_config)
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -158,13 +118,13 @@ def main(job_config: JobConfig):
 
     # log model size
     model_param_count = utils.get_num_params(model)
-    # num_flop_per_token = utils.get_num_flop_per_token(
-    #     utils.get_num_params(model),
-    #     model_config,
-    #     job_config.training.seq_len,
-    # )
+    num_flop_per_token = utils.get_num_flop_per_token(
+        utils.get_num_params(model, exclude_embedding=True),
+        model_config,
+        job_config.training.seq_len,
+    )
     logger.info(
-        f"{color.blue}Model {model_name} {job_config.model.flavor} "
+        f"{color.blue}Model {train_spec.name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
@@ -189,23 +149,15 @@ def main(job_config: JobConfig):
         init_device = device_type
         buffer_device = None
 
-    checkpoint_path = 'distributed_checkpoint/'
-
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
-        # TODO
-        # Convert a torch.nn.ModuleList to a torch.nn.ModuleDict
-        layer_module_dict = torch.nn.ModuleDict({str(i): module for i, module in enumerate(model.language_model.model.layers)})
-        model.language_model.model.layers = layer_module_dict
-        del layer_module_dict
-
         # apply PT-D Pipeline Parallel
         (
             pp_schedule,
             model_parts,
             has_first_stage,
             has_last_stage,
-        ) = models_pipelining_fns[model_name](
+        ) = train_spec.pipelining_fn(
             model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
         )
         # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
@@ -214,37 +166,21 @@ def main(job_config: JobConfig):
         # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
         # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
         # optimizer, and checkpointing
-        for idx, m in enumerate(model_parts):
+        for m in model_parts:
             # apply SPMD-style PT-D techniques
-            models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
+            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
             m.to_empty(device=init_device)
-            # with torch.no_grad():
-            #     m.init_weights(buffer_device=buffer_device)
-            state_dict = {"model": m.state_dict()}
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
-
-            # Restore buffers
-            if idx == 0:
-                logger.info(f"{buffers_dict.keys()}")
-                for name, buffer in buffers_dict.items():
-                    logger.info(f"{name}, {type(buffer)}, {buffer.shape}")
-                    #set_nested_attr(m, name, buffer.to(device_type))
-                    setattr(m, name, buffer.to(device_type))
-
+            with torch.no_grad():
+                m.init_weights(buffer_device=buffer_device)
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
+        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
-        state_dict = {"model": model.state_dict()}
         with torch.no_grad():
-            # model.init_weights(buffer_device=buffer_device)
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
-            # Restore buffers
-            for name, buffer in buffers_dict.items():
-                set_nested_attr(model, name, buffer.to(device_type))
-
+            model.init_weights(buffer_device=buffer_device)
         model.train()
+
         model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -255,8 +191,8 @@ def main(job_config: JobConfig):
     )
 
     # build optimizer after applying parallelisms to the model
-    optimizers = build_optimizers(model_parts, job_config)
-    lr_schedulers = build_lr_schedulers(optimizers.optimizers, job_config)
+    optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
+    lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
 
     train_state = TrainState()
 
@@ -331,7 +267,7 @@ def main(job_config: JobConfig):
             # get batch
             data_load_start = time.perf_counter()
             batch = next(data_iterator)
-            input_ids, labels = batch['input_ids'][0], batch['labels'][0]
+            input_ids, labels = batch
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
@@ -339,29 +275,14 @@ def main(job_config: JobConfig):
             labels = labels.to(device_type)
             optimizers.zero_grad()
 
-            pixel_values=batch['pixel_values'][0].to(device_type, model_dtype)
-            image_sizes=batch['image_sizes'][0].to(device_type, model_dtype)
-
-            # with torch.no_grad():
-            inputs_embeds = model.embed(
-                input_ids=input_ids,
-                pixel_values=pixel_values,
-                image_sizes=image_sizes)
-            logger.info(f"inputs_embeds: {inputs_embeds.shape}, {type(inputs_embeds)}")
-            
-            del input_ids, pixel_values, image_sizes
-
-            # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
-            inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['tp'], placements=[Shard(1)])
-
             # apply context parallelism if cp is enabled
             # ensure CP handles the separate freqs_cis buffer for each pp stage
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
-                    cp_buffers=[inputs_embeds, labels],
-                    cp_seq_dims=[1, 1],
-                    cp_no_restore_buffers={inputs_embeds, labels},
+                    cp_buffers=[input_ids, labels] + [m.freqs_cis for m in model_parts],
+                    cp_seq_dims=[1, 1] + [0 for _ in model_parts],
+                    cp_no_restore_buffers={input_ids, labels},
                     cp_rotate_method=job_config.experimental.context_parallel_rotate_method,
                 )
                 if parallel_dims.cp_enabled
@@ -373,7 +294,7 @@ def main(job_config: JobConfig):
                 with train_context(optional_context_parallel_ctx):
                     targets, losses = (labels, []) if has_last_stage else (None, None)
                     if has_first_stage:
-                        pp_schedule.step(inputs_embeds, target=targets, losses=losses)
+                        pp_schedule.step(input_ids, target=targets, losses=losses)
                     else:
                         pp_schedule.step(target=targets, losses=losses)
 
@@ -387,11 +308,11 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    output = model(inputs_embeds=inputs_embeds)
-                    loss = loss_fn(output.logits, labels)
+                    pred = model(input_ids)
+                    loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
-                    del output
+                    del pred
                     loss.backward()
 
             # clip gradients
@@ -443,7 +364,7 @@ def main(job_config: JobConfig):
                 # model FLOPS utilization
                 # For its definition and calculation, please refer to the PaLM paper:
                 # https://arxiv.org/abs/2204.02311
-                # mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
+                mfu = 100 * num_flop_per_token * tps / gpu_peak_flops
 
                 time_end_to_end = time_delta / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
@@ -455,7 +376,7 @@ def main(job_config: JobConfig):
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
                     "throughput(tps)": tps,
-                    # "mfu(%)": mfu,
+                    "mfu(%)": mfu,
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
                     "time_metrics/data_loading(%)": time_data_loading_pct,
@@ -474,7 +395,7 @@ def main(job_config: JobConfig):
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}tps: {round(tps):,}  "
-                    # f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
                 ntokens_since_last_log = 0

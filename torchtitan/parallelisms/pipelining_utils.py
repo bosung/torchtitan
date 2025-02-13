@@ -39,7 +39,7 @@ def generate_split_points(
             f"Unsupported pipeline schedule: {job_config.experimental.pipeline_parallel_schedule}"
         )
     total_stages = pp_dim * num_stages_per_rank
-    num_layers = model_config.n_layers
+    num_layers = model_config.text_config.num_hidden_layers if hasattr(model_config, 'text_config') else model_config.n_layers
     if total_stages > num_layers:
         raise ValueError("Total stages cannot be greater than the number of layers")
 
