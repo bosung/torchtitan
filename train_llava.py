@@ -103,11 +103,10 @@ def main(job_config: JobConfig):
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.hf_datasets import DPAwareDataLoader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset
-        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir)
+        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len)
         data_loader = DPAwareDataLoader(dp_rank, dataset, 
                                         batch_size=job_config.training.batch_size,
                                         world_size=world_size)
-        
     else:
         # build tokenizer
         tokenizer_type = model_name_to_tokenizer[model_name]
@@ -230,7 +229,7 @@ def main(job_config: JobConfig):
                     logger.info(f"{name}, {type(buffer)}, {buffer.shape}")
                     #set_nested_attr(m, name, buffer.to(device_type))
                     setattr(m, name, buffer.to(device_type))
-
+            m.to(model_dtype)
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
@@ -243,7 +242,7 @@ def main(job_config: JobConfig):
             # Restore buffers
             for name, buffer in buffers_dict.items():
                 set_nested_attr(model, name, buffer.to(device_type))
-
+        model.to(model_dtype)
         model.train()
         model_parts = [model]
 
@@ -342,17 +341,19 @@ def main(job_config: JobConfig):
             pixel_values=batch['pixel_values'][0].to(device_type, model_dtype)
             image_sizes=batch['image_sizes'][0].to(device_type, model_dtype)
 
-            # with torch.no_grad():
-            inputs_embeds = model.embed(
-                input_ids=input_ids,
-                pixel_values=pixel_values,
-                image_sizes=image_sizes)
+            with torch.no_grad():
+                inputs_embeds = model.embed(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    image_sizes=image_sizes)
             logger.info(f"inputs_embeds: {inputs_embeds.shape}, {type(inputs_embeds)}")
             
             del input_ids, pixel_values, image_sizes
 
             # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
-            inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['tp'], placements=[Shard(1)])
+            # if not isinstance(inputs_embeds, torch.Tensor):
+            #     inputs_embeds = inputs_embeds.wait()
+            # inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['cp'], placements=[Shard(1)])
 
             # apply context parallelism if cp is enabled
             # ensure CP handles the separate freqs_cis buffer for each pp stage

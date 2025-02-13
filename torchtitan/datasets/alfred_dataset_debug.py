@@ -21,5 +21,4 @@ data_loader = DPAwareDataLoader(dp_rank, dataset,
                                 world_size=1)
 
 for batch in data_loader:
-    breakpoint()
     print(batch['input_ids'])

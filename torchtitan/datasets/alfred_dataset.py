@@ -69,8 +69,8 @@ class ALFREDDataset(IterableDataset, Stateful):
         self.ignore_index = ignore_index
         self.eval = eval
 
-        if not self.eval:
-            self.max_seq_len = 131072
+        # if not self.eval:
+        #     self.max_seq_len = 131072
         
         self.split = split
 
@@ -172,22 +172,27 @@ class ALFREDDataset(IterableDataset, Stateful):
         # self.traj_data = [x for x in load_dataset("bosungkim/alfred-small-traj", split=self.split)]
         self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
 
-    def seq_preprocess(self, traj):
-        
-        # with high_pddl
-        input_seq = "Your Main Goal: "
-        if 'turk_annotations' in traj:
-            input_seq += traj['turk_annotations']['anns'][0]['task_desc']
-        # else we need to use templated desc .. later
-        main_goal_str = input_seq
-        n_main_goal_tokens = len(self.processor(text=main_goal_str).input_ids)
-
-        # low_idx_to_image
+    def seq_preprocess(self, traj): 
+        # Prepare: low_idx_to_image
         low_idx_2_image = defaultdict(list)
         for im_info in traj['images']:
             low_idx_2_image[im_info['low_idx']].append(im_info['image_name'])
-        
-        cur_high_idx = -1
+
+        # Prepare
+        high_idx_2_low_act_list = defaultdict(list)
+        for low_idx, low_act in enumerate(traj['plan']['low_actions']):
+            high_idx = low_act['high_idx']
+            low_act['low_idx'] = low_idx
+            if len(high_idx_2_low_act_list[high_idx]) > 0:
+                assert high_idx_2_low_act_list[high_idx][-1]['low_idx'] < low_act['low_idx']
+            high_idx_2_low_act_list[high_idx].append(low_act)
+
+        # start: make squences here
+        main_goal_str = "Your main goal: "
+        if 'turk_annotations' in traj:
+            main_goal_str += traj['turk_annotations']['anns'][0]['task_desc']
+        # else we need to use templated desc .. later
+        n_main_goal_tokens = len(self.processor(text=main_goal_str).input_ids)
 
         chunk_seq_list = []
         chunk_img_idx = []
@@ -196,47 +201,51 @@ class ALFREDDataset(IterableDataset, Stateful):
         n_chunk_tokens = n_main_goal_tokens # for chunking
         n_chunk_img = 0
         img_start_idx = 0
-        for low_idx, low_act in enumerate(traj['plan']['low_actions']):
-            low_act_seq = ""
-            n_low_act_tokens = 0
 
-            if low_act['high_idx'] > cur_high_idx:
-                plan_str = f" Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][low_act['high_idx']])}"
-                input_seq += plan_str
-                low_act_seq += plan_str
-                n_low_act_tokens += len(self.processor(text=plan_str).input_ids)
-                cur_high_idx = low_act['high_idx']
+        for high_idx, low_act_list in high_idx_2_low_act_list.items():
+            plan_str = f" Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][high_idx])}"
+            
+            high_plan_seq = ""
+            high_plan_seq += plan_str
+            n_high_plan_tokens = len(self.processor(text=plan_str).input_ids)
+            n_high_plan_img = 0
 
-            action_str = self.serialize_action(low_act['api_action'])
-            input_seq += f" {action_str}"
-            low_act_seq += f" {action_str}"
-            n_low_act_tokens += len(self.processor(text=action_str).input_ids)
+            for low_idx, low_act in enumerate(low_act_list):
+                action_str = self.serialize_action(low_act['api_action'])
+                low_act_seq = action_str
+                action_str_tok = self.processor(text=action_str).input_ids   
+                n_low_act_tokens = len(action_str_tok)
+                # count tokens for images
+                low_act_seq += (" <image>" * len(low_idx_2_image[low_idx]))
+                n_low_act_tokens += (1485 * len(low_idx_2_image[low_idx])) # one frame is 1485 tokens
+                    
+                if (n_high_plan_tokens + n_low_act_tokens) >= self.max_seq_len:
+                    break # do not add this low_act and break
+                else:
+                    n_high_plan_tokens += n_low_act_tokens
+                    high_plan_seq += low_act_seq
+                    n_high_plan_img += len(low_idx_2_image[low_idx])
 
-            for imgfile in low_idx_2_image[low_idx]:
-                input_seq += " <image>"
-                low_act_seq += " <image>"
-                n_low_act_tokens += 1485 # one frame is 1485 tokens
+            assert n_high_plan_tokens < self.max_seq_len
 
-            if (n_chunk_tokens + n_low_act_tokens) >= self.max_seq_len:
+            if (n_chunk_tokens + n_high_plan_tokens) >= self.max_seq_len:
                 chunk_seq_list.append(chunk_seq)
                 chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
 
                 # reset for next chunk
-                chunk_seq = main_goal_str + low_act_seq
-                n_chunk_tokens = n_main_goal_tokens + n_low_act_tokens
-                img_start_idx = img_start_idx + n_chunk_img 
+                chunk_seq = main_goal_str + high_plan_seq
+                n_chunk_tokens = n_main_goal_tokens + n_high_plan_tokens
+                img_start_idx = img_start_idx + n_chunk_img
+                n_chunk_img = n_high_plan_img
             else:
-                chunk_seq += low_act_seq
-                n_chunk_tokens += n_low_act_tokens
-                n_chunk_img += len(low_idx_2_image[low_idx])
+                chunk_seq += high_plan_seq
+                n_chunk_tokens += n_high_plan_tokens
+                n_chunk_img += n_high_plan_img
 
         chunk_seq_list.append(chunk_seq)
         chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
-            
-        logger.info(f"Original input_seq: {input_seq}")
-        #logger.info(f"Original input_tokens size: {n_tokens}")
 
-        logger.info(f"# Chunks: {len(chunk_seq_list)}")
+        logger.info(f"# of chunks: {len(chunk_seq_list)}, chunk_img_idx: {chunk_img_idx}")
 
         return chunk_seq_list, chunk_img_idx
 
