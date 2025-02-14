@@ -22,15 +22,11 @@ from torchtitan.datasets import build_hf_data_loader, build_tokenizer, build_hf_
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
-from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
-from torchtitan.optimizer import build_lr_schedulers, build_optimizers
-from torchtitan.parallelisms import (
-    models_parallelize_fns,
-    models_pipelining_fns,
-    ParallelDims,
-)
+from torchtitan.models import model_name_to_tokenizer
+from torchtitan.parallelisms import ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torchtitan.utils import device_module, device_type
+from torchtitan.train_spec import get_train_spec
+from torchtitan.utils import device_module, device_type, import_module_from_path
 from huggingface_hub import snapshot_download
 
 
@@ -48,6 +44,9 @@ def set_nested_attr(obj, name, value):
 def main(job_config: JobConfig):
     init_logger()
     logger.info(f"Starting job: {job_config.job.description}")
+
+    if job_config.experimental.custom_model_path:
+        import_module_from_path(job_config.experimental.custom_model_path)
 
     if job_config.job.print_args:
         logger.info(f"Running with args: {job_config.to_dict()}")
@@ -92,6 +91,7 @@ def main(job_config: JobConfig):
     utils.set_determinism(
         world_mesh, device, job_config.training.seed, job_config.training.deterministic
     )
+    train_spec = get_train_spec(job_config.model.name)
     model_name = job_config.model.name
 
     if job_config.training.dataset == "alfred":
@@ -103,7 +103,7 @@ def main(job_config: JobConfig):
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.hf_datasets import DPAwareDataLoader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset
-        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len)
+        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len, world_size=world_size)
         data_loader = DPAwareDataLoader(dp_rank, dataset, 
                                         batch_size=job_config.training.batch_size,
                                         world_size=world_size)
@@ -123,8 +123,8 @@ def main(job_config: JobConfig):
         )
 
     # build model (using meta init)
-    model_cls = model_name_to_cls[model_name]
-    model_config = models_config[model_name][job_config.model.flavor]
+    model_cls = train_spec.cls
+    model_config = train_spec.config[job_config.model.flavor]
     # set the model configs from training inputs:
     # 1. norm type to decide which norm layer to use
     # 2. vocab size from tokenizer
@@ -132,6 +132,10 @@ def main(job_config: JobConfig):
     model_config.norm_type = job_config.model.norm_type
     model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
     model_config.max_seq_len = job_config.training.seq_len
+
+    logger.info(
+        f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
+    )
 
     model_dtype = torch.bfloat16
 
@@ -233,7 +237,7 @@ def main(job_config: JobConfig):
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        models_parallelize_fns[model_name](model, world_mesh, parallel_dims, job_config)
+        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
         state_dict = {"model": model.state_dict()}
         with torch.no_grad():
@@ -254,8 +258,8 @@ def main(job_config: JobConfig):
     )
 
     # build optimizer after applying parallelisms to the model
-    optimizers = build_optimizers(model_parts, job_config)
-    lr_schedulers = build_lr_schedulers(optimizers.optimizers, job_config)
+    optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
+    lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
 
     train_state = TrainState()
 

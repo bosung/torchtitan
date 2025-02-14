@@ -68,6 +68,7 @@ class ALFREDDataset(IterableDataset, Stateful):
         self.eos_tok_id = processor.tokenizer.eos_token_id
         self.ignore_index = ignore_index
         self.eval = eval
+        self.world_size = world_size
 
         # if not self.eval:
         #     self.max_seq_len = 131072
@@ -140,10 +141,10 @@ class ALFREDDataset(IterableDataset, Stateful):
                 logger.info(f"Chunk-{ci} labels: {labels.shape}")
 
                 yield {
-                    'input_ids': pad_to_multiple(input_ids, pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
+                    'input_ids': pad_to_multiple(input_ids, multiple=(self.world_size*2), pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
                     'pixel_values': output.pixel_values, 
                     'image_sizes': output.image_sizes,
-                    'labels': pad_to_multiple(labels, pad_token=self.ignore_index),
+                    'labels': pad_to_multiple(labels, multiple=(self.world_size*2), pad_token=self.ignore_index),
                 }
 
     def _load_sample(self, traj, chunk=True):

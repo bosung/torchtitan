@@ -19,9 +19,9 @@ from torch.distributed.pipelining.schedules import (
 )
 from torchtitan.config_manager import JobConfig
 from torchtitan.logging import logger
-from torchtitan.models.llama.model import ModelArgs
-from torchtitan.parallelisms.parallel_dims import ParallelDims
-from torchtitan.parallelisms.pipelining_utils import (
+from torchtitan.models.llama.model import TransformerModelArgs
+from torchtitan.parallelisms import ParallelDims
+from torchtitan.parallelisms.pipeline import (
     build_pipeline_schedule,
     generate_split_points,
     stage_ids_this_rank,
@@ -36,7 +36,7 @@ def pipeline_llava(
     parallel_dims: ParallelDims,
     job_config: JobConfig,
     device: DeviceType,
-    model_config: ModelArgs,
+    model_config: TransformerModelArgs,
     loss_fn: Callable[..., torch.Tensor],
 ):
     stages, models = pipeline_llava_manual_split(
@@ -63,7 +63,7 @@ def pipeline_llava_manual_split(
     parallel_dims: ParallelDims,
     job_config: JobConfig,
     device: DeviceType,
-    model_config: ModelArgs,
+    model_config: TransformerModelArgs,
 ):
     """
     This API extracts one torch.nn.Module objects for the part of the model configured to run inside this stage.
