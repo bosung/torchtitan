@@ -132,12 +132,14 @@ class ALFREDDataset(IterableDataset, Stateful):
                 input_ids = output.input_ids[:, :-1]
                 labels = labels[:, 1:]
 
-                yield {
-                    'input_ids': pad_to_multiple(input_ids, multiple=(self.world_size*2), pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
-                    'pixel_values': output.pixel_values, 
-                    'image_sizes': output.image_sizes,
-                    'labels': pad_to_multiple(labels, multiple=(self.world_size*2), pad_token=self.ignore_index),
-                }
+                # TODO: batch for pipelining
+                for _ in range(2):
+                    yield {
+                        'input_ids': pad_to_multiple(input_ids, multiple=(self.world_size*2), pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
+                        'pixel_values': output.pixel_values, 
+                        'image_sizes': output.image_sizes,
+                        'labels': pad_to_multiple(labels, multiple=(self.world_size*2), pad_token=self.ignore_index),
+                    }
 
     def _load_sample(self, traj, chunk=True):
         traj = json.loads(traj['text'])

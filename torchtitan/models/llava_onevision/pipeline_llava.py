@@ -78,7 +78,7 @@ def pipeline_llava_manual_split(
 
     splits = (
         job_config.experimental.pipeline_parallel_split_points
-        or generate_split_points(job_config, parallel_dims.pp, model_config)
+        or generate_split_points(job_config, parallel_dims.pp, model_config.text_config.num_hidden_layers)
     )
     logger.info(f"splits: {splits}")
 

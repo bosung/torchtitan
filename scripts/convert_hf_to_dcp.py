@@ -1,6 +1,6 @@
 import os
 import torch
-from transformers import AutoConfig, LlavaOnevisionForConditionalGeneration
+from transformers import AutoConfig, AutoProcessor, LlavaOnevisionForConditionalGeneration
 import torch.distributed.checkpoint as DCP
 
 # Initialize model and accelerator
@@ -10,6 +10,9 @@ model_name = "llava-hf/llava-onevision-qwen2-7b-ov-hf"
 #config = AutoConfig.from_pretrained(model_name)
 #config.text_config.rope_scaling = {'type': 'dynamic', 'factor': 1.0} os.environ['MASTER_PORT'] = '12355'
 #config.text_config.rope_scaling = {'type': 'linear', 'factor': 1.0}
+processor = AutoProcessor.from_pretrained(model_name)
+tokenizer = processor.tokenizer
+processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
 
 model = LlavaOnevisionForConditionalGeneration.from_pretrained(
     model_name,
@@ -17,6 +20,7 @@ model = LlavaOnevisionForConditionalGeneration.from_pretrained(
     attn_implementation=None
     #config=config
     )
+model.resize_token_embeddings(len(processor.tokenizer))
 
 # TODO: Convert and save the distributed checkpoint
 # Save the distributed checkpoint

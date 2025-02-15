@@ -33,9 +33,9 @@ from transformers.utils import (
     add_start_docstrings,
     logging,
 )
-from transformers import AutoModel, AutoModelForCausalLM
+from transformers import AutoModel
 from transformers.models.llava_onevision.configuration_llava_onevision import LlavaOnevisionConfig
-
+from torchtitan.models.llava_onevision.modeling_qwen2 import Qwen2ForCausalLM
 
 logger = logging.get_logger(__name__)
 
@@ -373,7 +373,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
         self.image_newline = nn.Parameter(torch.randn(config.text_config.hidden_size, dtype=self.dtype) * embed_std)
 
         self.vocab_size = config.text_config.vocab_size
-        self.language_model = AutoModelForCausalLM.from_config(
+        self.language_model = Qwen2ForCausalLM.from_config(
             config.text_config, attn_implementation=config._attn_implementation
         )
         self.post_init()
@@ -508,7 +508,6 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
         cache_position: Optional[torch.LongTensor] = None,
         num_logits_to_keep: int = 0):
 
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -590,7 +589,6 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             )
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-            logger.info(f"inputs_embeds: {inputs_embeds[0][0][:30]}")
             '''
             ######################## distributed ver #######################
             # redistribute mask

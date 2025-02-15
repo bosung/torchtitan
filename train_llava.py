@@ -19,7 +19,6 @@ from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_hf_data_loader, build_tokenizer, build_hf_processor
-from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor, build_metric_logger
 from torchtitan.models import model_name_to_tokenizer
@@ -141,7 +140,8 @@ def main(job_config: JobConfig):
     # lot of stufff to figure out: activation checkpointing enabled.
     # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
     # TODO: change model code with native Llava classes
-    model_dtype = torch.float16
+    #model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
+    model_dtype = torch.float32
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
@@ -151,14 +151,12 @@ def main(job_config: JobConfig):
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         if 'llava' in model_name:
-            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
+            # using different attn_implementation really matters for TP, PP, CP, etc.
+            #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
+            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+            model.resize_token_embeddings(len(processor.tokenizer))
         else:
             model = model_cls.from_model_args(model_config)
-
-    # a no-op hander if float8 is not enabled
-    float8_handler = Float8Handler(job_config, parallel_dims)
-    # swap to Float8Linear based on float8 configs
-    float8_handler.convert_to_float8_training(model)
 
     # log model size
     model_param_count = utils.get_num_params(model)
@@ -197,7 +195,6 @@ def main(job_config: JobConfig):
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
-        # TODO
         # Convert a torch.nn.ModuleList to a torch.nn.ModuleDict
         layer_module_dict = torch.nn.ModuleDict({str(i): module for i, module in enumerate(model.language_model.model.layers)})
         model.language_model.model.layers = layer_module_dict
@@ -209,7 +206,7 @@ def main(job_config: JobConfig):
             model_parts,
             has_first_stage,
             has_last_stage,
-        ) = models_pipelining_fns[model_name](
+        ) = train_spec.pipelining_fn(
             model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
         )
         # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
@@ -220,12 +217,12 @@ def main(job_config: JobConfig):
         # optimizer, and checkpointing
         for idx, m in enumerate(model_parts):
             # apply SPMD-style PT-D techniques
-            models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
+            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
             m.to_empty(device=init_device)
             # with torch.no_grad():
             #     m.init_weights(buffer_device=buffer_device)
-            state_dict = {"model": m.state_dict()}
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
+            #state_dict = {"model": m.state_dict()}
+            dcp.load(m.state_dict(), checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
 
             # Restore buffers
             if idx == 0:
@@ -247,8 +244,6 @@ def main(job_config: JobConfig):
                 set_nested_attr(model, name, buffer.to(device_type))
         model.to(model_dtype)
         model.train()
-        if job_config.training.dataset == "alfred":
-            model.resize_token_embeddings(len(processor.tokenizer))
         model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -350,17 +345,25 @@ def main(job_config: JobConfig):
             image_sizes=batch['image_sizes'][0].to(device_type, model_dtype)
 
             with torch.no_grad():
-                inputs_embeds = model.embed(
-                    input_ids=input_ids,
-                    pixel_values=pixel_values,
-                    image_sizes=image_sizes)
+                if parallel_dims.pp_enabled:
+                    if has_first_stage:
+                        inputs_embeds = model_parts[0].embed(
+                            input_ids=input_ids,
+                            pixel_values=pixel_values,
+                            image_sizes=image_sizes)
+                else:
+                    inputs_embeds = model.embed(
+                        input_ids=input_ids,
+                        pixel_values=pixel_values,
+                        image_sizes=image_sizes)
             
             del input_ids, pixel_values, image_sizes
 
             # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
-            # if not isinstance(inputs_embeds, torch.Tensor):
-            #     inputs_embeds = inputs_embeds.wait()
-            # inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['cp'], placements=[Shard(1)])
+            if not parallel_dims.cp_enabled and has_first_stage:
+                if not isinstance(inputs_embeds, torch.Tensor):
+                    inputs_embeds = inputs_embeds.wait()
+                inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['tp'], placements=[Shard(1)])
 
             # apply context parallelism if cp is enabled
             # ensure CP handles the separate freqs_cis buffer for each pp stage
@@ -396,8 +399,6 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
                     output = model.language_model(inputs_embeds=inputs_embeds, use_cache=False)
-                    logger.info(f"model.language_model.lm_head: {model.language_model.lm_head.weight[0][:10]}, {type(model.language_model.lm_head.weight)}")
-                    logger.info(f"output.logits: {output.logits[0][:10]}")
                     loss = loss_fn(output.logits, labels)
                     logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
@@ -425,10 +426,6 @@ def main(job_config: JobConfig):
             checkpoint.maybe_wait_for_staging()
             optimizers.step()
             lr_schedulers.step()
-
-            # calculate float8 dynamic amax/scale for all-parameter for FSDP2
-            # it issues a single all-reduce for all parameters at once for better performance
-            float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
             # log metrics
             if (

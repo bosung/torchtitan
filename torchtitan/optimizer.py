@@ -192,11 +192,11 @@ class DTensorAwareOptimizersContainer(OptimizersContainer):
             self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
             all_params.extend(params)
 
-            # params = [p for p in model.parameters() if p.requires_grad and not isinstance(p, DTensor)]
-            # if len(params) > 0:
-            #     logger.info(f"DTensorAwareOptimizersContainer: {len(params)}")
-            #     self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
-            #     all_params.extend(params)
+            params = [p for p in model.parameters() if p.requires_grad and not isinstance(p, DTensor)]
+            if len(params) > 0:
+                logger.info(f"DTensorAwareOptimizersContainer: {len(params)}")
+                self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
+                all_params.extend(params)
         logger.info(f"optimizers {len(self.optimizers)} {self.optimizers[0]}")
 
         self._post_init(all_params, optimizer_kwargs)

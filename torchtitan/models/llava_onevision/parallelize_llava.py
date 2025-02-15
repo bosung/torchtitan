@@ -179,8 +179,14 @@ def apply_tp(
     # NOTE: At the cost of model code change, we can accelerate Sequence Parallel
     #       by folding (and unfolding) the batch dimension and the sequence dimension.
     #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
-    #for layer_id, transformer_block in model.language_model.model.layers.items():
-    for layer_id, transformer_block in enumerate(model.language_model.model.layers):
+    # Convert a torch.nn.ModuleList to a torch.nn.ModuleDict
+    if isinstance(model.language_model.model.layers, nn.ModuleList):
+        layer_module_dict = torch.nn.ModuleDict({str(i): module for i, module in enumerate(model.language_model.model.layers)})
+        model.language_model.model.layers = layer_module_dict
+        del layer_module_dict
+
+    #for layer_id, transformer_block in enumerate(model.language_model.model.layers):
+    for layer_id, transformer_block in model.language_model.model.layers.items():
         layer_plan = {
             "input_layernorm": SequenceParallel(),
             "self_attn": prepare_module_input(
