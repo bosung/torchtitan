@@ -132,14 +132,6 @@ class ALFREDDataset(IterableDataset, Stateful):
                 input_ids = output.input_ids[:, :-1]
                 labels = labels[:, 1:]
 
-                logger.info(f"{input_ids[0][:30]}")
-                logger.info(f"{labels[0][:30]}")
-
-                logger.info(f"Chunk-{ci} input_ids: {input_ids.shape}, {input_ids.dtype}, {input_ids.device}")
-                logger.info(f"Chunk-{ci} pixel_values: {output.pixel_values.shape}, {output.pixel_values.dtype}, {output.pixel_values.device}")
-                logger.info(f"Chunk-{ci} image_sizes: {output.image_sizes.shape}, {output.image_sizes.dtype}, {output.image_sizes.device}")
-                logger.info(f"Chunk-{ci} labels: {labels.shape}")
-
                 yield {
                     'input_ids': pad_to_multiple(input_ids, multiple=(self.world_size*2), pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
                     'pixel_values': output.pixel_values, 

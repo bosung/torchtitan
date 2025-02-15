@@ -20,6 +20,8 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
 from torchtitan.config_manager import JobConfig
+from torchtitan.logging import logger
+from torch.distributed.tensor import DTensor
 
 
 __all__ = [
@@ -27,6 +29,7 @@ __all__ = [
     "LRSchedulersContainer",
     "build_optimizers",
     "build_lr_schedulers",
+    "DTensorAwareOptimizersContainer"
 ]
 
 
@@ -177,6 +180,27 @@ class OptimizersInBackwardContainer(OptimizersContainer):
         pass
 
 
+class DTensorAwareOptimizersContainer(OptimizersContainer):
+    def __init__(
+        self, model_parts: List[nn.Module], optimizer_kwargs: Dict[str, Any], name: str
+    ) -> None:
+        all_params = []
+        self.optimizers: List[Optimizer] = []
+        self.model_parts = model_parts
+        for model in self.model_parts:
+            params = [p for p in model.parameters() if p.requires_grad and isinstance(p, DTensor)]
+            self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
+            all_params.extend(params)
+
+            # params = [p for p in model.parameters() if p.requires_grad and not isinstance(p, DTensor)]
+            # if len(params) > 0:
+            #     logger.info(f"DTensorAwareOptimizersContainer: {len(params)}")
+            #     self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
+            #     all_params.extend(params)
+        logger.info(f"optimizers {len(self.optimizers)} {self.optimizers[0]}")
+
+        self._post_init(all_params, optimizer_kwargs)
+
 def build_optimizers(
     model_parts: List[nn.Module], job_config: JobConfig
 ) -> OptimizersContainer:
@@ -218,6 +242,45 @@ def build_optimizers(
         if not optim_in_bwd
         else OptimizersInBackwardContainer(model_parts, optimizer_kwargs, name)
     )
+
+
+def build_llava_optimizers(
+    model_parts: List[nn.Module], job_config: JobConfig
+) -> OptimizersContainer:
+    """Create a OptimizersContainer for the given model parts and job config.
+
+    This function creates a ``OptimizersContainer`` for the given model parts.
+    ``job_config`` should define the correct optimizer name and parameters.
+    This function currently supports creating ``OptimizersContainer`` and
+    ``OptimizersInBackwardContainer``.
+
+    **Note**
+    Users who want to customize the optimizer behavior can create their own
+    ``OptimizersContainer`` subclass and ``build_optimizers``. Passing the
+    customized ``build_optimizers`` to ``TrainSpec`` will create the customized
+    ``OptimizersContainer``.
+
+    Args:
+        model_parts (List[nn.Module]): List of model parts to be optimized.
+        job_config (JobConfig): Job config containing the optimizer name and parameters.
+    """
+    optim_in_bwd = job_config.optimizer.early_step_in_backward
+    if optim_in_bwd and job_config.experimental.pipeline_parallel_degree > 1:
+        raise NotImplementedError(
+            "Optimizers in backward is not supported with pipeline parallelism."
+        )
+    name = job_config.optimizer.name
+    lr = job_config.optimizer.lr
+    fused = job_config.optimizer.fused
+    optimizer_kwargs = {
+        "lr": lr,
+        "betas": (0.9, 0.95),
+        "weight_decay": 0.1,
+        "fused": fused,
+        "foreach": not fused,
+    }
+
+    return DTensorAwareOptimizersContainer(model_parts, optimizer_kwargs, name)
 
 
 class LRSchedulersContainer(Stateful):

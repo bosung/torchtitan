@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch.distributed.pipelining.schedules import _PipelineSchedule
 
 from torchtitan.config_manager import JobConfig
-from torchtitan.optimizer import LRSchedulersContainer, OptimizersContainer
+from torchtitan.optimizer import LRSchedulersContainer, OptimizersContainer, DTensorAwareOptimizersContainer
 
 
 @dataclass

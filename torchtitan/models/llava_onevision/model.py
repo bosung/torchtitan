@@ -537,7 +537,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
 
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids)
-
+            
         # Images are processed with Anyres
         if pixel_values is not None:
             image_num_patches = [
@@ -589,8 +589,9 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
                 .to(inputs_embeds.device)
             )
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            #inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
-            
+            inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+            logger.info(f"inputs_embeds: {inputs_embeds[0][0][:30]}")
+            '''
             ######################## distributed ver #######################
             # redistribute mask
             if isinstance(special_image_mask, DTensor) and isinstance(inputs_embeds, DTensor):
@@ -607,35 +608,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             local_image_features = image_features.to_local() if isinstance(image_features, DTensor) else image_features
 
             inputs_embeds = local_inputs_embeds.masked_scatter(local_special_image_mask, local_image_features)
-
-        # Video are simply embedded and further pooled to decrease seq len
-        if pixel_values_videos is not None:
-            batch_size, frames, channels, height, width = pixel_values_videos.shape
-            pixel_values_videos = pixel_values_videos.view(batch_size * frames, channels, height, width)
-            video_features = self.vision_tower(pixel_values_videos, output_hidden_states=True)
-            selected_video_feature = video_features.hidden_states[vision_feature_layer]
-
-            if vision_feature_select_strategy == "default":
-                selected_video_feature = selected_video_feature[:, 1:]
-            elif vision_feature_select_strategy == "full":
-                selected_video_feature = selected_video_feature
-            video_features = self.multi_modal_projector(selected_video_feature)
-
-            video_features = self.apply_pooling(video_features)
-            video_features = video_features.reshape(batch_size, frames * video_features.shape[1], -1)
-            image_newline = self.image_newline[None, None, :].repeat(batch_size, 1, 1).to(video_features.device)
-            video_features = torch.cat((video_features, image_newline), dim=1)
-            video_features = video_features.flatten(0, 1)
-
-            special_video_mask = (
-                (input_ids == self.config.video_token_index)
-                .unsqueeze(-1)
-                .expand_as(inputs_embeds)
-                .to(inputs_embeds.device)
-            )
-            video_features = video_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            inputs_embeds = inputs_embeds.masked_scatter(special_video_mask, video_features)
-
+            '''
         return inputs_embeds
 
     @add_start_docstrings(LLAVA_ONEVISION_INPUTS_DOCSTRING)

@@ -137,7 +137,11 @@ def main(job_config: JobConfig):
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
     )
 
-    model_dtype = torch.bfloat16
+    # model_dtype = torch.bfloat16 -> woah!@ 
+    # lot of stufff to figure out: activation checkpointing enabled.
+    # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
+    # TODO: change model code with native Llava classes
+    model_dtype = torch.float16
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
@@ -147,12 +151,9 @@ def main(job_config: JobConfig):
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         if 'llava' in model_name:
-            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
         else:
             model = model_cls.from_model_args(model_config)
-
-    if job_config.training.dataset == "alfred":
-        model.resize_token_embeddings(len(processor.tokenizer))
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -238,16 +239,16 @@ def main(job_config: JobConfig):
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
         train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
-        model.to_empty(device=init_device)
-        state_dict = {"model": model.state_dict()}
+        model.to_empty(device=init_device)    
         with torch.no_grad():
-            # model.init_weights(buffer_device=buffer_device)
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
+            dcp.load(model.state_dict(), checkpoint_id=checkpoint_path)
             # Restore buffers
             for name, buffer in buffers_dict.items():
                 set_nested_attr(model, name, buffer.to(device_type))
         model.to(model_dtype)
         model.train()
+        if job_config.training.dataset == "alfred":
+            model.resize_token_embeddings(len(processor.tokenizer))
         model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -333,7 +334,10 @@ def main(job_config: JobConfig):
 
             # get batch
             data_load_start = time.perf_counter()
-            batch = next(data_iterator)
+            try:
+                batch = next(data_iterator)
+            except StopIteration:
+                data_iterator = iter(data_loader)
             input_ids, labels = batch['input_ids'][0], batch['labels'][0]
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
@@ -350,7 +354,6 @@ def main(job_config: JobConfig):
                     input_ids=input_ids,
                     pixel_values=pixel_values,
                     image_sizes=image_sizes)
-            logger.info(f"inputs_embeds: {inputs_embeds.shape}, {type(inputs_embeds)}")
             
             del input_ids, pixel_values, image_sizes
 
@@ -392,8 +395,11 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    output = model(inputs_embeds=inputs_embeds)
+                    output = model.language_model(inputs_embeds=inputs_embeds, use_cache=False)
+                    logger.info(f"model.language_model.lm_head: {model.language_model.lm_head.weight[0][:10]}, {type(model.language_model.lm_head.weight)}")
+                    logger.info(f"output.logits: {output.logits[0][:10]}")
                     loss = loss_fn(output.logits, labels)
+                    logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del output
@@ -401,7 +407,15 @@ def main(job_config: JobConfig):
 
             # clip gradients
             utils.clip_grad_norm_(
-                [p for m in model_parts for p in m.parameters()],
+                [p for m in model_parts for p in m.parameters() if isinstance(p, DTensor)],
+                job_config.training.max_norm,
+                foreach=True,
+                pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
+            )
+
+            # clip gradients
+            utils.clip_grad_norm_(
+                [p for m in model_parts for p in m.parameters() if not isinstance(p, DTensor)],
                 job_config.training.max_norm,
                 foreach=True,
                 pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
@@ -478,7 +492,7 @@ def main(job_config: JobConfig):
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({device_mem_stats.max_reserved_pct:.2f}%)  "
-                    f"{color.blue}tps: {round(tps):,}  "
+                    f"{color.blue}tps: {round(tps):,} {color.reset}"
                     # f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
                 )
 
