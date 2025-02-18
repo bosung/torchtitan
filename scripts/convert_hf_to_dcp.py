@@ -20,7 +20,7 @@ model = LlavaOnevisionForConditionalGeneration.from_pretrained(
     attn_implementation=None
     #config=config
     )
-model.resize_token_embeddings(len(processor.tokenizer))
+#model.resize_token_embeddings(len(processor.tokenizer))
 
 # TODO: Convert and save the distributed checkpoint
 # Save the distributed checkpoint

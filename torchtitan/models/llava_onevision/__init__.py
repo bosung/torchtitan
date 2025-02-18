@@ -3,6 +3,9 @@ from torchtitan.optimizer import build_lr_schedulers, build_llava_optimizers
 from transformers import AutoConfig
 from torchtitan.train_spec import register_train_spec, TrainSpec
 
+from torchtitan.models.llava_onevision.modeling_qwen2 import Qwen2Model
+from torchtitan.models.llava_onevision.configuration_qwen2 import Qwen2Config
+
 from .parallelize_llava import parallelize_llava
 from .pipeline_llava import pipeline_llava
 

@@ -12,6 +12,7 @@ from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from torchtitan.logging import logger
+#from torchtitan.datasets.hf_datasets import DPAwareDataLoader
 
 from datasets import Dataset, load_dataset
 
@@ -289,3 +290,43 @@ class ALFREDDataset(IterableDataset, Stateful):
             templated_str = "<<STOP>>"
 
         return templated_str
+
+
+class AlfredDataLoader(StatefulDataLoader, Stateful):
+    
+    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, world_size: int):    
+        super().__init__(hf_ds, batch_size, collate_fn=self.collate_fn)
+
+    @staticmethod
+    def collate_fn(batch):
+        """Handles variable length sequences by padding to max length in batch."""
+        max_len = max(sample['input_ids'].size(1) for sample in batch)
+        
+        input_ids = []
+        pixel_values = []
+        image_sizes = []
+        labels = []
+        
+        for sample in batch:
+            pad_len = max_len - sample['input_ids'].size(1)
+            
+            input_ids.append(torch.nn.functional.pad(
+                sample['input_ids'], (0, pad_len), mode='constant', value=0))
+            
+            pixel_values.append(sample['pixel_values'])
+            image_sizes.append(sample['image_sizes'])
+            
+            if 'labels' in sample:
+                labels.append(torch.nn.functional.pad(
+                    sample['labels'], (0, pad_len), mode='constant', value=-100))
+
+        batch_dict = {
+            'input_ids': torch.concat(input_ids, dim=0),
+            'pixel_values': torch.stack(pixel_values),
+            'image_sizes': torch.stack(image_sizes)
+        }
+        
+        if labels:
+            batch_dict['labels'] = torch.concat(labels, dim=0)
+            
+        return batch_dict

@@ -88,6 +88,8 @@ def pipeline_llava_manual_split(
 
         if not is_first:
             model.language_model.model.embed_tokens = None
+            del model.vision_tower
+            del model.multi_modal_projector
         
         drop_layers = start_layer is not None
         # Llava uses ModuleList instead of ModuleList, cannot use `del`

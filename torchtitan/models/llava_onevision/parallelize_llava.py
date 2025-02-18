@@ -179,14 +179,13 @@ def apply_tp(
     # NOTE: At the cost of model code change, we can accelerate Sequence Parallel
     #       by folding (and unfolding) the batch dimension and the sequence dimension.
     #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
-    # Convert a torch.nn.ModuleList to a torch.nn.ModuleDict
-    if isinstance(model.language_model.model.layers, nn.ModuleList):
-        layer_module_dict = torch.nn.ModuleDict({str(i): module for i, module in enumerate(model.language_model.model.layers)})
-        model.language_model.model.layers = layer_module_dict
-        del layer_module_dict
+    layers = model.language_model.model.layers
+    if isinstance(layers, nn.ModuleDict):
+        layer_iterator = layers.items() # ModuleDict case - use .items()
+    else:
+        layer_iterator = enumerate(layers) # ModuleList case - use enumerate
 
-    #for layer_id, transformer_block in enumerate(model.language_model.model.layers):
-    for layer_id, transformer_block in model.language_model.model.layers.items():
+    for layer_id, transformer_block in layer_iterator:
         layer_plan = {
             "input_layernorm": SequenceParallel(),
             "self_attn": prepare_module_input(
@@ -196,18 +195,18 @@ def apply_tp(
             "self_attn.q_proj": colwise_parallel(),
             "self_attn.k_proj": colwise_parallel(),
             "self_attn.v_proj": colwise_parallel(),
-            "self_attn.o_proj": rowwise_parallel(),
+            "self_attn.o_proj": rowwise_parallel(output_layouts=Shard(1)),
             "mlp": prepare_module_input(
                 input_layouts=(Shard(1),),
                 desired_input_layouts=(Replicate(),),
             ),
             "mlp.gate_proj": colwise_parallel(),
             "mlp.up_proj": colwise_parallel(),
-            "mlp.down_proj": rowwise_parallel(),
+            "mlp.down_proj": rowwise_parallel(output_layouts=Shard(1)),
             "post_attention_layernorm": SequenceParallel(),
         }
-        if layer_id == 0:
-            logger.info(transformer_block)
+        # if layer_id == 0:
+        #     logger.info(transformer_block)
 
         parallelize_module(
             module=transformer_block,
@@ -339,7 +338,13 @@ def apply_fsdp(
     if cpu_offload:
         fsdp_config["offload_policy"] = CPUOffloadPolicy()
 
-    for layer_id, transformer_block in enumerate(model.language_model.model.layers):
+    layers = model.language_model.model.layers
+    if isinstance(layers, nn.ModuleDict):
+        layer_iterator = layers.items() # ModuleDict case - use .items()
+    else:
+        layer_iterator = enumerate(layers) # ModuleList case - use enumerate
+
+    for layer_id, transformer_block in layer_iterator:
         if pp_enabled:
             # For PP, do not reshard after forward to avoid per-microbatch
             # all-gathers, which can be expensive and non-overlapped
@@ -354,9 +359,13 @@ def apply_fsdp(
             reshard_after_forward=reshard_after_forward,
         )
     #fully_shard(model.language_model.model, **fsdp_config, reshard_after_forward=not pp_enabled)
+    fully_shard(model.language_model.model.norm, **fsdp_config, reshard_after_forward=not pp_enabled)
+    fully_shard(model.language_model.lm_head, **fsdp_config, reshard_after_forward=not pp_enabled)
     # apply FSDP to vision_tower and multi_modal_projector
-    fully_shard(model.vision_tower,  **fsdp_config, reshard_after_forward=not pp_enabled)
-    fully_shard(model.multi_modal_projector,  **fsdp_config, reshard_after_forward=not pp_enabled)
+    if hasattr(model, 'vision_tower'):
+        fully_shard(model.vision_tower,  **fsdp_config, reshard_after_forward=not pp_enabled)
+    if hasattr(model, 'multi_modal_projector'):
+        fully_shard(model.multi_modal_projector,  **fsdp_config, reshard_after_forward=not pp_enabled)
 
 
 def apply_partial_fsdp(
