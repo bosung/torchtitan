@@ -37,7 +37,7 @@ dataset = "alfred"
 
 [experimental]
 context_parallel_degree = 1
-pipeline_parallel_degree = 4
+pipeline_parallel_degree = 8
 
 [checkpoint]
 enable_checkpoint = false
