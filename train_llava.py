@@ -8,6 +8,7 @@ import os
 import time
 from datetime import timedelta
 from pathlib import Path
+import subprocess
 
 import torch
 
@@ -29,12 +30,7 @@ from torchtitan.train_spec import get_train_spec
 from torchtitan.utils import device_module, device_type, import_module_from_path
 from huggingface_hub import snapshot_download, upload_folder, create_repo
 
-# HF_REPO_ID = os.environ['HF_REPO_ID']
-
-# try:
-#     create_repo(HF_REPO_ID, exist_ok=True)
-# except Exception as e:
-#     raise ValueError(f"Error accessing to hub {HF_REPO_ID}: {e}")
+AWS_S3_PATH = os.environ['AWS_S3_PATH']
 
 
 def get_local_rank():
@@ -50,8 +46,7 @@ def set_nested_attr(obj, name, value):
     setattr(obj, parts[-1], value)
 
 
-def save_model_checkpoint(model, step, output_dir, optimizer=None):
-    """Save model checkpoint using DCP"""
+def save_model_checkpoint(model, optimizer, step, output_dir):
     if dist.get_rank() == 0:
         Path(output_dir).mkdir(exist_ok=True)
     
@@ -59,17 +54,14 @@ def save_model_checkpoint(model, step, output_dir, optimizer=None):
     
     # Get model and optimizer states
     model_state = model.state_dict()
-    # TODO save optimizer(s) as well
-    # optimizer_state = optimizer.state_dict()
+    optimizer_state = optimizer.state_dict()
     
-    # Combine states into a single dictionary
     state_dict = {
         "model": model_state,
-        # "optimizer": optimizer_state,
-        # "step": step
+        "optimizer": optimizer_state,
+        "step": step
     }
     
-    # Save using DCP
     storage_writer = dcp.FileSystemWriter(output_dir)
     dcp.save(
         state_dict=state_dict,
@@ -77,29 +69,26 @@ def save_model_checkpoint(model, step, output_dir, optimizer=None):
         planner=None  # Use default planner
     )
 
-    # Ensure all saves are complete
     dist.barrier()
     
-    # TODO: hold -- NCCL timeout during uploading
-    # Push to HF Hub from local_rank 0
-    # if get_local_rank() == 0:
-    #     try:
-    #         # Create repo from master node only
-    #         if dist.get_rank() == 0:
-    #             create_repo(HF_REPO_ID, exist_ok=True)
-    #         dist.barrier()
+    # Push checkpoints from local_rank 0
+    if get_local_rank() == 0:
+        try:
+            # Run aws s3 sync in background using nohup
+            sync_command = f"nohup aws s3 sync {output_dir} {AWS_S3_PATH}/ckpt_{step} > /tmp/s3_sync_{step}.log 2>&1 &"
+            subprocess.Popen(
+                sync_command,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            logger.info(f"Started background S3 sync for checkpoint at step {step}")
+        except Exception as e:
+            logger.error(f"Error starting S3 sync: {e}")
 
-    #         upload_folder(
-    #             folder_path=output_dir,
-    #             repo_id=HF_REPO_ID,
-    #             repo_type="model",
-    #             path_in_repo=f"ckpt-{step}"
-    #         )
-    #     except Exception as e:
-    #         print(f"Error pushing to hub: {e}")
-
-    # # Ensure upload is complete before proceeding
-    # dist.barrier()
+    # Ensure upload is complete before proceeding
+    dist.barrier()
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -583,7 +572,7 @@ def main(job_config: JobConfig):
                 # save and push to HF
                 save_model_checkpoint(
                     model=model,
-                    #optimizer=optimizer,
+                    optimizer=optimizer,
                     step=train_state.step,
                     output_dir=output_dir
                 )
