@@ -406,7 +406,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
     def tie_weights(self):
         return self.language_model.tie_weights()
 
-    def pack_image_features(self, image_features, image_sizes, image_newline=None, vision_aspect_ratio="anyres_max_9"):
+    def pack_image_features(self, image_features, image_sizes=None, n_image=None, image_newline=None, vision_aspect_ratio="anyres_max_9"):
         """
         Reshape, unpad and then pack each image_feature into a single image_features tensor containing all visual vectors.
 
@@ -426,6 +426,11 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
         """
         new_image_features = []
         feature_lens = []
+
+        if n_image:
+            image_sizes = torch.tensor([[300, 300] for _ in range(n_image)], device=image_features[0].device)
+            image_features = image_features[:n_image]
+
         for image_idx, image_feature in enumerate(image_features):
             if image_feature.shape[0] > 1:
                 base_image_feature = image_feature[0]
@@ -490,7 +495,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
         self,
         input_ids: torch.LongTensor = None,
         pixel_values: torch.FloatTensor = None,
-        image_sizes: Optional[torch.LongTensor] = None,
+        n_image: Optional[torch.LongTensor] = None,
         pixel_values_videos: torch.FloatTensor = None,
         image_sizes_videos: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -548,7 +553,8 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             #     for imsize in image_sizes
             # ]
             image_num_patch = 2 # we use the same image_size for all frames
-            batch_size, batch_seq_len = image_sizes.size()[:2]
+            #batch_size, batch_seq_len = image_sizes.size()[:2]
+            batch_size, batch_seq_len = pixel_values.size()[:2]
             image_num_patches = [[2] * batch_seq_len for _ in range(batch_size)]  
 
             # unpad extra patches and concatenate them
@@ -581,28 +587,27 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             image_features = self.multi_modal_projector(selected_image_feature)
             #image_features = image_features.view(batch_size, batch_seq_len, -1, image_features.shape[-1])
             image_features = image_features.view((batch_size, -1,) + image_features.shape[-2:])
-            
+            logger.info(f"{n_image}")
             batch_image_features = []
             for i in range(batch_size):
                 image_features_list = torch.split(image_features[i], image_num_patches[i], dim=0)
                 single_image_features, feature_lens = self.pack_image_features(
                     image_features_list,
-                    image_sizes[i],
+                    n_image=int(n_image[i].item()),
                     image_newline=self.image_newline,
                     vision_aspect_ratio=vision_aspect_ratio,
                 )
-                batch_image_features.append(single_image_features)
-            image_features = torch.stack(batch_image_features)
+                #batch_image_features.append(single_image_features)
+            #image_features = torch.stack(batch_image_features)
             #image_features = torch.split(image_features, image_num_patches, dim=0)
-
-            special_image_mask = (
-                (input_ids == self.config.image_token_index)
-                .unsqueeze(-1)
-                .expand_as(inputs_embeds)
-                .to(inputs_embeds.device)
-            )
-            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-            inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+                special_image_mask = (
+                    (input_ids[i] == self.config.image_token_index)
+                    .unsqueeze(-1)
+                    .expand_as(inputs_embeds[i])
+                    .to(inputs_embeds.device)
+                )
+                single_image_features = single_image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+                inputs_embeds[i] = inputs_embeds[i].masked_scatter(special_image_mask, single_image_features)
             '''
             ######################## distributed ver #######################
             # redistribute mask
@@ -627,6 +632,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
     def forward(
         self,
         inputs_embeds: torch.FloatTensor,
+        #position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         input_ids: Optional[torch.LongTensor] = None,
         pixel_values: torch.FloatTensor = None,
         image_sizes: Optional[torch.LongTensor] = None,

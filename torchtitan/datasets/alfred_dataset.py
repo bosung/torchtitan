@@ -46,12 +46,21 @@ def pad_to_multiple(tensor, multiple=4, pad_token=0):
     return tensor
 
 
+def pad_to_max_seq(tensor, max_seq=8192, pad_token=0):
+    length = tensor.shape[1]
+    pad_length = max_seq - length
+    if pad_length > 0:
+        pad_tensor = torch.full((tensor.shape[0], pad_length), pad_token, dtype=tensor.dtype)
+        tensor = torch.cat([tensor, pad_tensor], dim=1)
+    return tensor
+
+
 class ALFREDDataset(IterableDataset, Stateful):
 
     def __init__(
         self,
         processor,
-        img_data_dir,
+        img_data_dir: str = "",
         split: str = "train",
         max_seq_len: int = 131072,
         world_size: int = 1,
@@ -104,6 +113,10 @@ class ALFREDDataset(IterableDataset, Stateful):
     def __iter__(self):
         for traj in self.traj_data:
             print(f"Loading a new example ... ")
+
+            if self.eval:
+                yield traj
+
             chunks = self._load_sample(traj, chunk=True)
 
             if not isinstance(chunks, list):
@@ -133,21 +146,22 @@ class ALFREDDataset(IterableDataset, Stateful):
                 input_ids = output.input_ids[:, :-1]
                 labels = labels[:, 1:]
 
-                # TODO: batch for pipelining
-                for _ in range(2):
-                    yield {
-                        'input_ids': pad_to_multiple(input_ids, multiple=(self.world_size*2), pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
-                        'pixel_values': output.pixel_values, 
-                        'image_sizes': output.image_sizes,
-                        'labels': pad_to_multiple(labels, multiple=(self.world_size*2), pad_token=self.ignore_index),
-                    }
+                yield {
+                    'input_ids': pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
+                    'pixel_values': output.pixel_values, 
+                    'image_sizes': output.image_sizes,
+                    'labels': pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index),
+                }
 
     def _load_sample(self, traj, chunk=True):
+        filename = traj['filename']
         traj = json.loads(traj['text'])
         chunk_seq_list, chunk_img_idx = self.seq_preprocess(traj)
 
-        img_tar_file = traj['img_tar']
-        traj_imgs = set([x['image_name'].split(".")[0] for x in traj['images']])
+        #img_tar_file = traj['img_tar']
+        #traj_imgs = set([x['image_name'].split(".")[0] for x in traj['images']])
+
+        img_tar_file = filename.replace("txt", "tar")
         tar_file = os.path.join(self.img_data_dir, img_tar_file)
 
         img_list = extract_and_convert_tar(tar_file)
@@ -167,6 +181,25 @@ class ALFREDDataset(IterableDataset, Stateful):
     def _load_traj_data(self):
         # self.traj_data = [x for x in load_dataset("bosungkim/alfred-small-traj", split=self.split)]
         self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
+        '''
+        directory_path = '/root/torchtitan/data/alfred-full/traj'
+        for root, _, files in os.walk(directory_path):
+            for file in files:
+                # Check if file is a .txt file
+                if file.endswith('.txt'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        # Read and parse the JSON content
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            #json_content = json.load(f)
+                            # Add file path as metadata
+                            #json_content['_file_path'] = file_path
+                            self.traj_data.append({'text': f.read(), 'filename': file})
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing JSON from {file_path}: {str(e)}")
+                    except Exception as e:
+                        print(f"Error reading file {file_path}: {str(e)}")
+        '''
 
     def seq_preprocess(self, traj): 
         # Prepare: low_idx_to_image
@@ -299,31 +332,33 @@ class AlfredDataLoader(StatefulDataLoader, Stateful):
 
     @staticmethod
     def collate_fn(batch):
-        """Handles variable length sequences by padding to max length in batch."""
-        max_len = max(sample['input_ids'].size(1) for sample in batch)
+        max_img_len = max(sample['pixel_values'].size(0) for sample in batch)
         
         input_ids = []
         pixel_values = []
-        image_sizes = []
+        n_image = []
         labels = []
         
         for sample in batch:
-            pad_len = max_len - sample['input_ids'].size(1)
-            
-            input_ids.append(torch.nn.functional.pad(
-                sample['input_ids'], (0, pad_len), mode='constant', value=0))
-            
-            pixel_values.append(sample['pixel_values'])
-            image_sizes.append(sample['image_sizes'])
-            
-            if 'labels' in sample:
-                labels.append(torch.nn.functional.pad(
-                    sample['labels'], (0, pad_len), mode='constant', value=-100))
+            input_ids.append(sample['input_ids'])
+
+            pad_len = max_img_len - sample['pixel_values'].size(0)
+
+            if pad_len > 0:
+                pad_shape = (pad_len, *sample['pixel_values'].shape[1:])
+                padding = torch.zeros(pad_shape, dtype=sample['pixel_values'].dtype, 
+                                device=sample['pixel_values'].device)
+                pixel_values.append(torch.cat([sample['pixel_values'], padding], dim=0))
+            else:
+                pixel_values.append(sample['pixel_values'])
+
+            n_image.append([sample['pixel_values'].shape[0]])
+            labels.append(sample['labels'])
 
         batch_dict = {
             'input_ids': torch.concat(input_ids, dim=0),
             'pixel_values': torch.stack(pixel_values),
-            'image_sizes': torch.stack(image_sizes)
+            'n_image': torch.tensor(n_image, device=input_ids[0].device, dtype=input_ids[0].dtype)
         }
         
         if labels:

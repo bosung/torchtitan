@@ -7,6 +7,7 @@
 import os
 import time
 from datetime import timedelta
+from pathlib import Path
 
 import torch
 
@@ -26,7 +27,18 @@ from torchtitan.parallelisms import ParallelDims
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.train_spec import get_train_spec
 from torchtitan.utils import device_module, device_type, import_module_from_path
-from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download, upload_folder, create_repo
+
+# HF_REPO_ID = os.environ['HF_REPO_ID']
+
+# try:
+#     create_repo(HF_REPO_ID, exist_ok=True)
+# except Exception as e:
+#     raise ValueError(f"Error accessing to hub {HF_REPO_ID}: {e}")
+
+
+def get_local_rank():
+  return int(os.environ["LOCAL_RANK"])
 
 
 def set_nested_attr(obj, name, value):
@@ -36,6 +48,58 @@ def set_nested_attr(obj, name, value):
     for part in parts[:-1]:
         obj = getattr(obj, part)
     setattr(obj, parts[-1], value)
+
+
+def save_model_checkpoint(model, step, output_dir, optimizer=None):
+    """Save model checkpoint using DCP"""
+    if dist.get_rank() == 0:
+        Path(output_dir).mkdir(exist_ok=True)
+    
+    dist.barrier()  # Ensure directory is created
+    
+    # Get model and optimizer states
+    model_state = model.state_dict()
+    # TODO save optimizer(s) as well
+    # optimizer_state = optimizer.state_dict()
+    
+    # Combine states into a single dictionary
+    state_dict = {
+        "model": model_state,
+        # "optimizer": optimizer_state,
+        # "step": step
+    }
+    
+    # Save using DCP
+    storage_writer = dcp.FileSystemWriter(output_dir)
+    dcp.save(
+        state_dict=state_dict,
+        storage_writer=storage_writer,
+        planner=None  # Use default planner
+    )
+
+    # Ensure all saves are complete
+    dist.barrier()
+    
+    # TODO: hold -- NCCL timeout during uploading
+    # Push to HF Hub from local_rank 0
+    # if get_local_rank() == 0:
+    #     try:
+    #         # Create repo from master node only
+    #         if dist.get_rank() == 0:
+    #             create_repo(HF_REPO_ID, exist_ok=True)
+    #         dist.barrier()
+
+    #         upload_folder(
+    #             folder_path=output_dir,
+    #             repo_id=HF_REPO_ID,
+    #             repo_type="model",
+    #             path_in_repo=f"ckpt-{step}"
+    #         )
+    #     except Exception as e:
+    #         print(f"Error pushing to hub: {e}")
+
+    # # Ensure upload is complete before proceeding
+    # dist.barrier()
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -96,9 +160,11 @@ def main(job_config: JobConfig):
     if job_config.training.dataset == "alfred":
         processor = build_hf_processor(model_name)
         tokenizer = processor.tokenizer
+        #img_data_dir = snapshot_download(repo_id="PEARLS-Lab/alfred-full", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-full')
         img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
+        #img_data_dir = '/root/torchtitan/data/alfred-full/data'
         processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
-
+        
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
         dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len, world_size=world_size)
@@ -136,9 +202,7 @@ def main(job_config: JobConfig):
     )
 
     # model_dtype = torch.bfloat16 -> woah!@ 
-    # lot of stufff to figure out: activation checkpointing enabled.
     # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
-    # TODO: change model code with native Llava classes
     #model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
     model_dtype = torch.float32
 
@@ -150,15 +214,11 @@ def main(job_config: JobConfig):
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         if 'llava' in model_name:
-            # using different attn_implementation really matters for TP, PP, CP, etc.
+            # using different attn_implementation might matter depending on TP, PP, and CP, etc.
             #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
             model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
-            # logger.info(f"{len(processor.tokenizer)}, {model.language_model.lm_head.weight.shape}")
-            # remainder = len(processor.tokenizer) % 8
-            # for i in range(remainder):
-            #     processor.tokenizer.add_special_tokens({"additional_special_tokens": [f'<|extra{i}|>']})
-            # model.resize_token_embeddings(len(processor.tokenizer))
-            # logger.info(f"{len(processor.tokenizer)}, {model.language_model.lm_head.weight.shape}")
+            assert len(processor.tokenizer) < model.language_model.lm_head.weight.shape[0]
+            assert model.language_model.lm_head.weight.shape[0] % 8 == 0
         else:
             model = model_cls.from_model_args(model_config)
 
@@ -225,8 +285,8 @@ def main(job_config: JobConfig):
             m.to_empty(device=init_device)
             # with torch.no_grad():
             #     m.init_weights(buffer_device=buffer_device)
-            #state_dict = {"model": m.state_dict()}
-            dcp.load(m.state_dict(), checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
+            state_dict = {"model": m.state_dict()}
+            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
 
             # Restore buffers
             # if idx == 0:
@@ -243,7 +303,8 @@ def main(job_config: JobConfig):
         train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)    
         with torch.no_grad():
-            dcp.load(model.state_dict(), checkpoint_id=checkpoint_path)
+            state_dict = {"model": model.state_dict()}
+            dcp.load(state_dict, checkpoint_id=checkpoint_path)
             # Restore buffers
             for name, buffer in buffers_dict.items():
                 set_nested_attr(model, name, buffer.to(device_type))
@@ -348,7 +409,7 @@ def main(job_config: JobConfig):
             optimizers.zero_grad()
 
             pixel_values=batch['pixel_values'].to(device_type, model_dtype)
-            image_sizes=batch['image_sizes'].to(device_type, model_dtype)
+            n_image=batch['n_image'].to(device_type, model_dtype)
 
             with torch.no_grad():
                 if parallel_dims.pp_enabled:
@@ -356,37 +417,30 @@ def main(job_config: JobConfig):
                         inputs_embeds = model_parts[0].embed(
                             input_ids=input_ids,
                             pixel_values=pixel_values,
-                            image_sizes=image_sizes)
+                            n_image=n_image)
                 else:
                     inputs_embeds = model.embed(
                         input_ids=input_ids,
                         pixel_values=pixel_values,
-                        image_sizes=image_sizes)
-            
-            del input_ids, pixel_values, image_sizes
+                        n_image=n_image)
 
+            position_ids = torch.arange(
+                0, input_ids.shape[1], device=input_ids.device
+            )
+            position_ids = position_ids.unsqueeze(0)
+            position_ids = position_ids.expand(input_ids.shape[0], position_ids.shape[1])
+            del input_ids, pixel_values, n_image
+            
             # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
             # if not (parallel_dims.cp_enabled and (parallel_dims.pp_enabled and has_first_stage)):
+            # TODO let's do not use pass here
             if parallel_dims.tp_enabled:
                 if parallel_dims.pp_enabled and not has_first_stage:
                     pass
                 else:
-                    logger.info(f"step: {train_state.step:2} inputs_embeds: {inputs_embeds.shape} {type(inputs_embeds)}")
-                    position_ids = torch.arange(
-                        0, inputs_embeds.shape[1], device=inputs_embeds.device
-                    )
-                    position_ids = position_ids.unsqueeze(0)
-                    position_embeddings = model.language_model.model.rotary_emb(inputs_embeds, position_ids)
-
-                    # if not isinstance(inputs_embeds, torch.Tensor):
-                    #     inputs_embeds = inputs_embeds.wait()
+                    # redistributed for TP
                     inputs_embeds = distribute_tensor(inputs_embeds, world_mesh['tp'], placements=[Shard(1)])
                     inputs_embeds = inputs_embeds.to_local()
-
-                    # cos and sin
-                    for pe in position_embeddings:
-                        pe = distribute_tensor(pe, world_mesh['tp'], placements=[Shard(1)])
-                        pe = pe.to_local()
 
             # apply context parallelism if cp is enabled
             # ensure CP handles the separate freqs_cis buffer for each pp stage
@@ -409,9 +463,9 @@ def main(job_config: JobConfig):
                     if has_first_stage:
                         logger.info(f"step: {train_state.step:2} inputs_embeds: {inputs_embeds.shape} {type(inputs_embeds)}")
                         #pp_schedule.step(target=targets, losses=losses, **{"inputs_embeds":inputs_embeds})
-                        pp_schedule.step(inputs_embeds, target=targets, losses=losses, **{"position_embeddings":position_embeddings})
+                        pp_schedule.step(inputs_embeds, target=targets, losses=losses, **{"position_ids":position_ids})
                     else:
-                        pp_schedule.step(target=targets, losses=losses)
+                        pp_schedule.step(target=targets, losses=losses, **{"position_ids":position_ids})
 
                 # accumulate losses across pipeline microbatches
                 # TODO: PP+FSDP unexpectedly puts the loss back to the CPU
@@ -429,7 +483,7 @@ def main(job_config: JobConfig):
                     position_embeddings=position_embeddings,
                     use_cache=False)
                     loss = loss_fn(logits, labels)
-                    logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
+                    # logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del logits
@@ -523,10 +577,16 @@ def main(job_config: JobConfig):
                 train_state.step, force=(train_state.step == job_config.checkpoint.interval)
             )
 
-            if train_state.step == job_config.checkpoint.interval:
-                output_dir = './outputs/ckpts/'
-                dcp.save(model.state_dict(), checkpoint_id=output_dir)
-                # push to HF
+            if (train_state.step % job_config.checkpoint.interval) == 0:
+                output_dir = f"./outputs/ckpt-{train_state.step}"
+                # dcp.save(model.state_dict(), checkpoint_id=output_dir)
+                # save and push to HF
+                save_model_checkpoint(
+                    model=model,
+                    #optimizer=optimizer,
+                    step=train_state.step,
+                    output_dir=output_dir
+                )
 
             # signal the profiler that the next profiling step has started
             if torch_profiler:
