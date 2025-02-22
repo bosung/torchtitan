@@ -126,6 +126,13 @@ class ALFREDDataset(IterableDataset, Stateful):
 
             for ci, chunk in enumerate(chunks):
                 # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
+                if len(chunk['img_list']) == 0:
+                    logger.warning(f"len(chunk['img_list']) == 0, chunk['lang_input']: {chunk['lang_input']}")
+                    continue
+                if len(chunk['img_list']) != chunk['lang_input'].count('<image>'):
+                    logger.warning(f"len(chunk['img_list']): {len(chunk['img_list'])}, len(chunk['lang_input']): {len(chunk['lang_input'])}, chunk['lang_input']: {chunk['lang_input']}")
+                    raise ValueError()
+
                 output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
 
                 if self.eval:
@@ -167,7 +174,7 @@ class ALFREDDataset(IterableDataset, Stateful):
         tar_file = os.path.join(self.img_data_dir, img_tar_file)
 
         img_list = extract_and_convert_tar(tar_file)
-
+        breakpoint()
         chunks = []
 
         for input_seq, (img_start, img_end) in zip(chunk_seq_list, chunk_img_idx):
