@@ -63,6 +63,13 @@ def parallelize_llava(
             enable_float8=job_config.float8.enable_float8_linear,
             enable_async_tp=job_config.experimental.enable_async_tensor_parallel,
         )
+        if parallel_dims.pp_enabled and hasattr(model, "vision_tower"):
+            apply_tp_vision_tower(
+                model,
+                world_mesh["tp"],
+                enable_float8=job_config.float8.enable_float8_linear,
+                enable_async_tp=job_config.experimental.enable_async_tensor_parallel,
+            )
 
     if job_config.activation_checkpoint.mode != "none":
         apply_ac(model, job_config.activation_checkpoint)
@@ -223,6 +230,70 @@ def apply_tp(
     logger.info(
         f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''}"
         "Tensor Parallelism to the model"
+    )
+
+
+def apply_tp_vision_tower(
+    model: nn.Module,
+    tp_mesh: DeviceMesh,
+    enable_float8: bool,
+    enable_async_tp: bool,
+):
+    """Apply tensor parallelism for the vision tower."""
+
+    rowwise_parallel, colwise_parallel, prepare_module_input = (
+            RowwiseParallel,
+            ColwiseParallel,
+            PrepareModuleInput,
+    )
+
+    parallelize_module(
+        model.vision_tower.vision_model,
+        tp_mesh,
+        {   # cannot parallelize bc of image features
+            # "embed_tokens": RowwiseParallel( 
+            #     input_layouts=Replicate(),
+            #     output_layouts=Shard(1),
+            # ),
+            "post_layernorm": SequenceParallel(),
+        },
+    )
+
+    for layer_id, siglip_block in enumerate(model.vision_tower.vision_model.encoder.layers):
+        layer_plan = {
+            # "self_attn": prepare_module_input(
+            #     #input_kwarg_layouts={"hidden_states": Shard(1)},
+            #     #desired_input_kwarg_layouts={"hidden_states": Replicate()}
+            # ),
+            "self_attn.q_proj": colwise_parallel(),
+            "self_attn.k_proj": colwise_parallel(),
+            "self_attn.v_proj": colwise_parallel(),
+            "self_attn.out_proj": rowwise_parallel(output_layouts=Shard(1)),
+            "layer_norm1": SequenceParallel(),
+            "mlp": prepare_module_input(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+            ),
+            "mlp.fc1": colwise_parallel(),
+            "mlp.fc2": rowwise_parallel(output_layouts=Shard(1)),
+            "layer_norm2": SequenceParallel(),
+        }
+
+        parallelize_module(
+            module=siglip_block,
+            device_mesh=tp_mesh,
+            parallelize_plan=layer_plan,
+        )
+    
+    if enable_async_tp:
+        from torch.distributed._symmetric_memory import enable_symm_mem_for_group
+
+        torch._inductor.config._micro_pipeline_tp = True
+        enable_symm_mem_for_group(tp_mesh.get_group().group_name)
+
+    logger.info(
+        f"Applied {'Float8 ' if enable_float8 else ''}{'Async ' if enable_async_tp else ''}"
+        "Tensor Parallelism to the model.vision_tower"
     )
 
 

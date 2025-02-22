@@ -36,6 +36,7 @@ from transformers.utils import (
 from transformers import AutoModel
 from torchtitan.models.llava_onevision.configuration_llava_onevision import LlavaOnevisionConfig
 from torchtitan.models.llava_onevision.modeling_qwen2 import Qwen2ForCausalLM
+from torchtitan.models.llava_onevision.modeling_siglip import SiglipVisionModel
 
 logger = logging.get_logger(__name__)
 
@@ -364,7 +365,7 @@ LLAVA_ONEVISION_INPUTS_DOCSTRING = r"""
 class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, GenerationMixin):
     def __init__(self, config: LlavaOnevisionConfig):
         super().__init__(config)
-        self.vision_tower = AutoModel.from_config(
+        self.vision_tower = SiglipVisionModel._from_config(
             config.vision_config, attn_implementation=config._attn_implementation
         )
 
