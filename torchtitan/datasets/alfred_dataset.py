@@ -174,7 +174,6 @@ class ALFREDDataset(IterableDataset, Stateful):
         tar_file = os.path.join(self.img_data_dir, img_tar_file)
 
         img_list = extract_and_convert_tar(tar_file)
-        breakpoint()
         chunks = []
 
         for input_seq, (img_start, img_end) in zip(chunk_seq_list, chunk_img_idx):
