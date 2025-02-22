@@ -587,7 +587,6 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             image_features = self.multi_modal_projector(selected_image_feature)
             #image_features = image_features.view(batch_size, batch_seq_len, -1, image_features.shape[-1])
             image_features = image_features.view((batch_size, -1,) + image_features.shape[-2:])
-            logger.info(f"{n_image}")
             batch_image_features = []
             for i in range(batch_size):
                 image_features_list = torch.split(image_features[i], image_num_patches[i], dim=0)

@@ -60,6 +60,7 @@ class ALFREDDataset(IterableDataset, Stateful):
     def __init__(
         self,
         processor,
+        traj_data_dir: str = "",
         img_data_dir: str = "",
         split: str = "train",
         max_seq_len: int = 131072,
@@ -101,6 +102,7 @@ class ALFREDDataset(IterableDataset, Stateful):
             "NoOp": "NoOp",
         }
 
+        self.traj_data_dir = traj_data_dir
         self.img_data_dir = img_data_dir
         self.traj_data = []
 
@@ -154,11 +156,11 @@ class ALFREDDataset(IterableDataset, Stateful):
                 }
 
     def _load_sample(self, traj, chunk=True):
-        filename = traj['filename']
+        # with S3
+        filename = traj['filename'] # with S3
         traj = json.loads(traj['text'])
         chunk_seq_list, chunk_img_idx = self.seq_preprocess(traj)
 
-        #img_tar_file = traj['img_tar']
         #traj_imgs = set([x['image_name'].split(".")[0] for x in traj['images']])
 
         img_tar_file = filename.replace("txt", "tar")
@@ -180,9 +182,8 @@ class ALFREDDataset(IterableDataset, Stateful):
 
     def _load_traj_data(self):
         # self.traj_data = [x for x in load_dataset("bosungkim/alfred-small-traj", split=self.split)]
-        self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
-        '''
-        directory_path = '/root/torchtitan/data/alfred-full/traj'
+        #self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
+        directory_path = self.traj_data_dir
         for root, _, files in os.walk(directory_path):
             for file in files:
                 # Check if file is a .txt file
@@ -199,7 +200,6 @@ class ALFREDDataset(IterableDataset, Stateful):
                         print(f"Error parsing JSON from {file_path}: {str(e)}")
                     except Exception as e:
                         print(f"Error reading file {file_path}: {str(e)}")
-        '''
 
     def seq_preprocess(self, traj): 
         # Prepare: low_idx_to_image

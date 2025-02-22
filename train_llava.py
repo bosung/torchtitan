@@ -46,19 +46,36 @@ def set_nested_attr(obj, name, value):
     setattr(obj, parts[-1], value)
 
 
-def save_model_checkpoint(model, optimizer, step, output_dir):
+def combine_model_parts_state(model_parts):
+    combined_state = {}
+    
+    for model in model_parts:
+        part_state = model.state_dict()
+        
+        # Store each parameter using its original name
+        for key, value in part_state.items():
+            if value is not None:
+                combined_state[key] = value
+            
+    return combined_state
+
+
+def save_model_checkpoint(model, step, output_dir):
     if dist.get_rank() == 0:
         Path(output_dir).mkdir(exist_ok=True)
     
     dist.barrier()  # Ensure directory is created
     
     # Get model and optimizer states
-    model_state = model.state_dict()
-    optimizer_state = optimizer.state_dict()
+    if isinstance(model, list): # for PP -- model parts:
+        combined_state = combine_model_parts_state(model)
+        model_state = combined_state
+        pass
+    else:
+        model_state = model.state_dict()
     
     state_dict = {
         "model": model_state,
-        "optimizer": optimizer_state,
         "step": step
     }
     
@@ -150,13 +167,16 @@ def main(job_config: JobConfig):
         processor = build_hf_processor(model_name)
         tokenizer = processor.tokenizer
         #img_data_dir = snapshot_download(repo_id="PEARLS-Lab/alfred-full", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-full')
-        img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small-img')
-        #img_data_dir = '/root/torchtitan/data/alfred-full/data'
+        #img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small')
+        traj_data_dir = os.environ['TRAJ_DATA_DIR'] 
+        img_data_dir = os.environ['IMG_DATA_DIR']
         processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
         
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
-        dataset = ALFREDDataset(processor=processor, img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len, world_size=world_size)
+        dataset = ALFREDDataset(processor=processor,
+        traj_data_dir=traj_data_dir,
+        img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len, world_size=world_size)
         data_loader = AlfredDataLoader(dp_rank, dataset, 
                                         batch_size=job_config.training.batch_size,
                                         world_size=world_size)
@@ -569,10 +589,8 @@ def main(job_config: JobConfig):
             if (train_state.step % job_config.checkpoint.interval) == 0:
                 output_dir = f"./outputs/ckpt-{train_state.step}"
                 # dcp.save(model.state_dict(), checkpoint_id=output_dir)
-                # save and push to HF
                 save_model_checkpoint(
-                    model=model,
-                    optimizer=optimizer,
+                    model=model_parts,
                     step=train_state.step,
                     output_dir=output_dir
                 )
