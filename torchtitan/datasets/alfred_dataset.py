@@ -125,13 +125,15 @@ class ALFREDDataset(IterableDataset, Stateful):
                 chunks = [chunks]
 
             for ci, chunk in enumerate(chunks):
+                n_img_token = chunk['lang_input'].count('<image>')
                 # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
                 if len(chunk['img_list']) == 0:
                     logger.warning(f"len(chunk['img_list']) == 0, chunk['lang_input']: {chunk['lang_input']}")
                     continue
-                if len(chunk['img_list']) != chunk['lang_input'].count('<image>'):
+                if len(chunk['img_list']) != n_img_token:
+                    logger.warning(f"Some images are missed -- expected {n_img_token}, but {len(chunk['img_list'])}")
                     logger.warning(f"len(chunk['img_list']): {len(chunk['img_list'])}, len(chunk['lang_input']): {len(chunk['lang_input'])}, chunk['lang_input']: {chunk['lang_input']}")
-                    raise ValueError()
+                    continue # raise ValueError()
 
                 output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
 
