@@ -1,6 +1,3 @@
-# torchtitan Config.toml
-# NOTE: this toml config is a preset for 64 A100 GPUs.
-
 [job]
 dump_folder = "./outputs"
 description = "Llava one vision qwen2 7B training"
@@ -24,8 +21,8 @@ name = "AdamW"
 lr = 1e-5
 
 [training]
-batch_size = 8
-seq_len = 65536 # 131072 # maximum sequence length for this model
+batch_size = 16
+seq_len = 131072 # maximum sequence length for this model
 warmup_steps = 10  # lr scheduler warm up # warmup_ratio 0.03
 max_norm = 1.0  # grad norm clipping
 steps = 10
@@ -37,7 +34,7 @@ dataset = "alfred"
 
 [experimental]
 context_parallel_degree = 1
-pipeline_parallel_degree = 8
+pipeline_parallel_degree = 16
 
 [checkpoint]
 enable_checkpoint = false
