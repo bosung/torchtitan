@@ -143,7 +143,9 @@ def apply_tp(
             #     input_layouts=Replicate(),
             #     output_layouts=Shard(1),
             # ),
-            "norm": SequenceParallel(),
+            "norm": SequenceParallel(
+                #use_local_output=True
+            ),
         },
     )
     parallelize_module(

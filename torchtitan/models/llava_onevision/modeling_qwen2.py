@@ -716,32 +716,16 @@ class Qwen2DecoderLayer(nn.Module):
             position_embeddings=position_embeddings,
         )
 
-        # if not isinstance(hidden_states, type(residual)):
-        #     hidden_states = hidden_states.wait()
-        #     hidden_states = distribute_tensor(hidden_states, residual.device_mesh, placements=residual.placements)
-
         hidden_states = residual + hidden_states
-        #logger.info(f"residual: {type(residual), {residual.shape}}, {residual.placements}")
-        #hidden_states = residual.to_local() + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
 
-        if not isinstance(hidden_states, type(residual)):
-            hidden_states = hidden_states.wait()
-            hidden_states = distribute_tensor(hidden_states, residual.device_mesh, placements=residual.placements)
-
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
 
         return outputs
 
@@ -910,7 +894,6 @@ class Qwen2Model(Qwen2PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
-        # inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -960,8 +943,10 @@ class Qwen2Model(Qwen2PreTrainedModel):
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
+
         if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
+            #position_ids = cache_position.unsqueeze(0)
+            position_ids = self.position_ids.expand(inputs_embeds.shape[0], self.position_ids.shape[1])
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
@@ -1013,8 +998,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 )
 
             hidden_states = layer_outputs[0]
-
+            
         hidden_states = self.norm(hidden_states) if self.norm else hidden_states
+        
         return hidden_states
 
 
@@ -1209,32 +1195,8 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         # TODO: remove the float() operation in v4.46
         #with torch.autocast(device_type="cuda"):
         output = self.lm_head(hidden_states[:, -num_logits_to_keep:, :]).float() if self.lm_head else hidden_states
-
+        
         return output
-
-        # loss = None
-        # if labels is not None:
-        #     # Upcast to float if we need to compute the loss to avoid potential precision issues
-        #     logits = logits.float()
-        #     # Shift so that tokens < n predict n
-        #     shift_logits = logits[..., :-1, :].contiguous()
-        #     shift_labels = labels[..., 1:].contiguous()
-        #     # Flatten the tokens
-        #     loss_fct = CrossEntropyLoss()
-        #     shift_logits = shift_logits.view(-1, self.config.vocab_size)
-        #     shift_labels = shift_labels.view(-1)
-        #     # Enable model parallelism
-        #     shift_labels = shift_labels.to(shift_logits.device)
-        #     loss = loss_fct(shift_logits, shift_labels)
-
-        # if not return_dict:
-        #     output = (logits,) + outputs[1:]
-        #     return (loss,) + output if loss is not None else output
-
-        # return CausalLMOutputWithPast(
-        #     loss=loss,
-        #     logits=logits
-        # )
 
     # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation
     def prepare_inputs_for_generation(

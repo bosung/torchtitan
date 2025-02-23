@@ -42,6 +42,8 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlavaNextConfig"
 
+import os
+RANK = os.environ['LOCAL_RANK']
 
 # Copied from transformers.models.llava_next.modeling_llava_next.get_anyres_image_grid_shape
 def get_anyres_image_grid_shape(image_size, grid_pinpoints, patch_size):
@@ -512,7 +514,8 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        num_logits_to_keep: int = 0):
+        num_logits_to_keep: int = 0,
+        enable_embed_batch: bool = False):
         
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -542,42 +545,8 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
 
         if inputs_embeds is None:
             inputs_embeds = self.get_input_embeddings()(input_ids)
-        
-        # Images are processed with Anyres
-        if pixel_values is not None:
-            # image_num_patches = [
-            #     image_size_to_num_patches( # -> always 2
-            #         image_size=imsize,
-            #         grid_pinpoints=self.config.image_grid_pinpoints,
-            #         patch_size=self.config.vision_config.image_size,
-            #     )
-            #     for imsize in image_sizes
-            # ]
-            image_num_patch = 2 # we use the same image_size for all frames
-            #batch_size, batch_seq_len = image_sizes.size()[:2]
-            batch_size, batch_seq_len = pixel_values.size()[:2]
-            image_num_patches = [[2] * batch_seq_len for _ in range(batch_size)]  
 
-            # unpad extra patches and concatenate them
-            if pixel_values.dim() == 6: # for batch
-                # (bsz, frames, num_patches, n_channels, h, w)
-                # [batch_size*frames*num_patches, num_channels, height, width]
-                pixel_values = pixel_values.view((-1,) + pixel_values.size()[-3:])
-            elif pixel_values.dim() == 5: # pixel_values: torch.Size([n_img, 2, 3, 384, 384])
-                # -- Error iterating over DTensor.
-                # NotImplementedError: Operator aten.select.int does not have a sharding strategy registered.
-                _pixel_values_list = [
-                    pix_val[:num_patch] for pix_val, num_patch in zip(pixel_values, image_num_patches)
-                ]
-                # [batch_size*frames*num_patches, num_channels, height, width] where frames=1 for images
-                pixel_values = torch.cat(_pixel_values_list, dim=0)
-            elif pixel_values.dim() != 4:
-                raise ValueError(f"pixel_values of shape {pixel_values.shape}, expect to be of 4 or 5 dimensions")
-
-            # may cause OOM in vision tower: sharding for vision_tower
-            #if hasattr(self.vision_tower, 'device_mesh') and not hasattr(pixel_values, 'device_mesh'):
-            #   pixel_values = distribute_tensor(pixel_values, self.vision_tower.mesh, placements=[torch.distributed._tensor.Shard(3)])
-            
+        def get_img_feat_and_mask(pixel_values, image_num_patches, _input_ids, n_image: int):
             image_features = self.vision_tower(pixel_values, output_hidden_states=True)
             selected_image_feature = image_features.hidden_states[vision_feature_layer]
 
@@ -586,28 +555,52 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             elif vision_feature_select_strategy == "full":
                 selected_image_feature = selected_image_feature
             image_features = self.multi_modal_projector(selected_image_feature)
-            #image_features = image_features.view(batch_size, batch_seq_len, -1, image_features.shape[-1])
-            image_features = image_features.view((batch_size, -1,) + image_features.shape[-2:])
-            batch_image_features = []
-            for i in range(batch_size):
-                image_features_list = torch.split(image_features[i], image_num_patches[i], dim=0)
-                single_image_features, feature_lens = self.pack_image_features(
-                    image_features_list,
-                    n_image=int(n_image[i].item()),
-                    image_newline=self.image_newline,
-                    vision_aspect_ratio=vision_aspect_ratio,
-                )
-                #batch_image_features.append(single_image_features)
-            #image_features = torch.stack(batch_image_features)
-            #image_features = torch.split(image_features, image_num_patches, dim=0)
-                special_image_mask = (
-                    (input_ids[i] == self.config.image_token_index)
-                    .unsqueeze(-1)
-                    .expand_as(inputs_embeds[i])
-                    .to(inputs_embeds.device)
-                )
-                single_image_features = single_image_features.to(inputs_embeds.device, inputs_embeds.dtype)
-                inputs_embeds[i] = inputs_embeds[i].masked_scatter(special_image_mask, single_image_features)
+
+            image_features = torch.split(image_features, image_num_patches, dim=0)
+            image_features, feature_lens = self.pack_image_features(
+                image_features,
+                n_image=n_image,
+                image_newline=self.image_newline,
+                vision_aspect_ratio=vision_aspect_ratio,
+            )
+
+            special_image_mask = (
+                (_input_ids == self.config.image_token_index)
+                .unsqueeze(-1)
+                .expand_as(inputs_embeds[0].unsqueeze(0))
+                .to(inputs_embeds.device)
+            )
+            image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
+
+            return special_image_mask, image_features
+        
+        # Images are processed with single-resolution assuming all frames have the same size
+        if pixel_values is not None:
+            image_num_patch = 2 # we use the same image_size for all frames: (3, 300, 300)
+            if enable_embed_batch:
+                batch_size, batch_seq_len = pixel_values.size()[:2]
+                image_num_patches_list = [[2] * batch_seq_len for _ in range(batch_size)]  
+
+                selected_image_feature = []
+                for i in range(batch_size):
+                    single_pixel_values = pixel_values[i]
+                    image_num_patches = image_num_patches_list[i]
+                    _pixel_values_list = [pix_val[:num_patch] for pix_val, num_patch in zip(single_pixel_values, image_num_patches)]
+                    single_pixel_values = torch.cat(_pixel_values_list, dim=0)
+                    special_image_mask, single_image_features = get_img_feat_and_mask(single_pixel_values, image_num_patches, _input_ids=input_ids[i].unsqueeze(0), n_image=int(n_image[i].item()))
+                    inputs_embeds[i] = inputs_embeds[i].masked_scatter(special_image_mask, single_image_features)
+            else:
+                if pixel_values.dim() == 5:
+                    _pixel_values_list = [pix_val[:num_patch] for pix_val, num_patch in zip(pixel_values, image_num_patches)]
+                    # [batch_size*frames*num_patches, num_channels, height, width] where frames=1 for images
+                    pixel_values = torch.cat(_pixel_values_list, dim=0)
+                elif pixel_values.dim() != 4:
+                    raise ValueError(f"pixel_values of shape {pixel_values.shape}, expect to be of 4 or 5 dimensions")
+
+                image_num_patches = [[2] * int(n_image[0].item())] # n_image = (1, n_img)
+                special_image_mask, image_features = get_img_feat_and_mask(pixel_values, image_num_patches, _input_ids=input_ids, n_image=int(n_image[0].item()))
+                inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
+
             '''
             ######################## distributed ver #######################
             # redistribute mask
@@ -764,7 +757,6 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            #inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -772,40 +764,8 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
             cache_position=cache_position,
             num_logits_to_keep=num_logits_to_keep,
         )
-
-        return outputs
-
-        #logits = outputs[0]
         
-        # loss = None
-        # if labels is not None:
-        #     # Shift so that tokens < n predict n
-        #     if attention_mask is not None:
-        #         shift_attention_mask = attention_mask[..., 1:]
-        #         shift_logits = logits[..., :-1, :][shift_attention_mask.to(logits.device) != 0].contiguous()
-        #         shift_labels = labels[..., 1:][shift_attention_mask.to(labels.device) != 0].contiguous()
-        #     else:
-        #         shift_logits = logits[..., :-1, :].contiguous()
-        #         shift_labels = labels[..., 1:].contiguous()
-        #     # Flatten the tokens
-        #     loss_fct = nn.CrossEntropyLoss()
-        #     loss = loss_fct(
-        #         shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).to(shift_logits.device)
-        #     )
-
-        # if not return_dict:
-        #     output = (logits,) + outputs[1:]
-        #     return (loss,) + output if loss is not None else output
-
-        # return LlavaOnevisionCausalLMOutputWithPast(
-        #     loss=loss,
-        #     logits=logits,
-        #     past_key_values=outputs.past_key_values,
-        #     hidden_states=outputs.hidden_states,
-        #     attentions=outputs.attentions,
-        #     image_hidden_states=image_features if pixel_values is not None else None,
-        #     video_hidden_states=video_features if pixel_values_videos is not None else None,
-        # )
+        return outputs
 
     def prepare_inputs_for_generation(
         self,

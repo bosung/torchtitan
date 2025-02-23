@@ -9,7 +9,7 @@ profile_freq = 100
 
 [metrics]
 log_freq = 10
-enable_wandb = false
+enable_wandb = true
 
 [model]
 name = "llava-hf/llava-onevision-qwen2-7b-ov-hf"
@@ -21,8 +21,8 @@ name = "AdamW"
 lr = 1e-5
 
 [training]
-batch_size = 2
-seq_len = 16384 # 131072 # maximum sequence length for this model
+batch_size = 16
+seq_len = 65536 # 131072 # maximum sequence length for this model
 warmup_steps = 10  # lr scheduler warm up # warmup_ratio 0.03
 max_norm = 1.0  # grad norm clipping
 steps = 10
@@ -34,7 +34,7 @@ dataset = "alfred"
 
 [experimental]
 context_parallel_degree = 1
-pipeline_parallel_degree = 2
+pipeline_parallel_degree = 16
 
 [checkpoint]
 enable_checkpoint = false

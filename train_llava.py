@@ -212,8 +212,7 @@ def main(job_config: JobConfig):
 
     # model_dtype = torch.bfloat16 -> woah!@ 
     # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
-    #model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
-    model_dtype = torch.float32
+    model_dtype = torch.bfloat16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
@@ -285,6 +284,10 @@ def main(job_config: JobConfig):
         # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
         del model
 
+        # Since TP shards input_embeds, position_ids is not algined based on its position
+        # set postion_ids as buffer so that not to pass in forward (only works for training)
+        position_ids = torch.arange(0, job_config.training.seq_len).unsqueeze(0)
+
         # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
         # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
         # optimizer, and checkpointing
@@ -299,12 +302,16 @@ def main(job_config: JobConfig):
 
             # Restore buffers
             # if idx == 0:
-            #logger.info(f"{buffers_dict.keys()}") # all buffer's size is very small
+            #logger.info(f"{buffers_dict.keys()}") # every buffer's size is very small
             for name, buffer in buffers_dict.items():
                 #if idx == 0:
                 #    logger.info(f"{name}, {type(buffer)}, {buffer.shape}")
                 #set_nested_attr(m, name, buffer.to(device_type))
                 setattr(m, name, buffer.to(device_type))
+
+            if hasattr(m, "language_model"):
+                setattr(m.language_model.model, 'position_ids', position_ids.to(device_type))
+
             m.to(model_dtype)
             m.train()
     else:
@@ -420,18 +427,22 @@ def main(job_config: JobConfig):
             pixel_values=batch['pixel_values'].to(device_type, model_dtype)
             n_image=batch['n_image'].to(device_type, model_dtype)
 
+            # TODO add to config
+            enable_embed_batch = True if (job_config.training.seq_len >= 16384 and job_config.training.batch_size > 1) else False
             with torch.no_grad():
                 if parallel_dims.pp_enabled:
                     if has_first_stage:
                         inputs_embeds = model_parts[0].embed(
                             input_ids=input_ids,
                             pixel_values=pixel_values,
-                            n_image=n_image)
+                            n_image=n_image,
+                            enable_embed_batch=enable_embed_batch)
                 else:
                     inputs_embeds = model.embed(
                         input_ids=input_ids,
                         pixel_values=pixel_values,
-                        n_image=n_image)
+                        n_image=n_image,
+                        enable_embed_batch=enable_embed_batch)
 
             position_ids = torch.arange(
                 0, input_ids.shape[1], device=input_ids.device
@@ -472,10 +483,13 @@ def main(job_config: JobConfig):
                     if has_first_stage:
                         logger.info(f"step: {train_state.step:2} inputs_embeds: {inputs_embeds.shape} {type(inputs_embeds)}")
                         #pp_schedule.step(target=targets, losses=losses, **{"inputs_embeds":inputs_embeds})
-                        pp_schedule.step(inputs_embeds, target=targets, losses=losses, **{"position_ids":position_ids})
+                        #pp_schedule.step(inputs_embeds, target=targets, losses=losses, **{"position_ids":position_ids})
+                        pp_schedule.step(inputs_embeds, target=targets, losses=losses)
                     else:
-                        pp_schedule.step(target=targets, losses=losses, **{"position_ids":position_ids})
-
+                        #pp_schedule.step(target=targets, losses=losses, **{"position_ids":position_ids})
+                        logger.info(f"step: {train_state.step:2} -- stage 2")
+                        pp_schedule.step(target=targets, losses=losses)
+                        logger.info(f"step: {train_state.step:2} -- stage 2 DONE ! ")
                 # accumulate losses across pipeline microbatches
                 # TODO: PP+FSDP unexpectedly puts the loss back to the CPU
                 loss = (

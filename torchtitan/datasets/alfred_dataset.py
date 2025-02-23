@@ -209,7 +209,7 @@ class ALFREDDataset(IterableDataset, Stateful):
                     except Exception as e:
                         print(f"Error reading file {file_path}: {str(e)}")
 
-    def seq_preprocess(self, traj): 
+    def seq_preprocess(self, traj, sparse_frame=False):
         # Prepare: low_idx_to_image
         low_idx_2_image = defaultdict(list)
         for im_info in traj['images']:
@@ -252,16 +252,19 @@ class ALFREDDataset(IterableDataset, Stateful):
                 low_act_seq = action_str
                 action_str_tok = self.processor(text=action_str).input_ids   
                 n_low_act_tokens = len(action_str_tok)
+
                 # count tokens for images
-                low_act_seq += (" <image>" * len(low_idx_2_image[low_idx]))
-                n_low_act_tokens += (1485 * len(low_idx_2_image[low_idx])) # one frame is 1485 tokens
-                    
+                n_low_img = 2 if sparse_frame else len(low_idx_2_image[low_idx])
+
+                low_act_seq += (" <image>" * n_low_img)
+                n_low_act_tokens += (1485 * n_low_img) # one frame is 1485 tokens
+
                 if (n_high_plan_tokens + n_low_act_tokens) >= self.max_seq_len:
                     break # do not add this low_act and break
                 else:
                     n_high_plan_tokens += n_low_act_tokens
                     high_plan_seq += low_act_seq
-                    n_high_plan_img += len(low_idx_2_image[low_idx])
+                    n_high_plan_img += n_low_img
 
             assert n_high_plan_tokens < self.max_seq_len
 

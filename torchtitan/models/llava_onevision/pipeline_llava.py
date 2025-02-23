@@ -92,17 +92,14 @@ def pipeline_llava_manual_split(
             del model.multi_modal_projector
         
         drop_layers = start_layer is not None
-        # Llava uses ModuleList instead of ModuleList, cannot use `del`
         for name in list(model.language_model.model.layers.keys()): # name is index 0, 1, 2, ...
             # we keep layers in a contiguous region between start (inclusive) and stop (exclusive)
             if f"layers.{name}" == start_layer:
                 drop_layers = False
             if f"layers.{name}" == stop_layer:
                 drop_layers = True
-            if drop_layers: # Llava uses ModuleList instead of ModuleList, cannot use `del`
-                #logger.info(f"drop: {name}, {type(model.language_model.model.layers)}, {len(model.language_model.model.layers)}")
+            if drop_layers:
                 del model.language_model.model.layers[name]
-                #model.language_model.model.layers[name] = None
 
         if not is_last:
             model.language_model.model.norm = None
