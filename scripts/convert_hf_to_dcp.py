@@ -14,7 +14,7 @@ model_name = "llava-hf/llava-onevision-qwen2-7b-ov-hf"
 
 model = LlavaOnevisionForConditionalGeneration.from_pretrained(
     model_name,
-    torch_dtype=torch.bfloat16,
+    #torch_dtype=torch.bfloat16,
     #config=config
 )
 #model.resize_token_embeddings(len(processor.tokenizer))
