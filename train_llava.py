@@ -210,9 +210,9 @@ def main(job_config: JobConfig):
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
     )
 
-    # model_dtype = torch.bfloat16 -> woah!@ 
+    # model_dtype = torch.bfloat16 -> woah!@ !!
     # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
-    model_dtype = torch.bfloat16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
+    model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
