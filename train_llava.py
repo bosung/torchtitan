@@ -224,7 +224,7 @@ def main(job_config: JobConfig):
         if 'llava' in model_name:
             # using different attn_implementation might matter depending on TP, PP, and CP, etc.
             #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
-            model = model_cls.from_pretrained(model_namee)
+            model = model_cls.from_pretrained(model_name)
             assert len(processor.tokenizer) < model.language_model.lm_head.weight.shape[0]
             assert model.language_model.lm_head.weight.shape[0] % 8 == 0
         else:
