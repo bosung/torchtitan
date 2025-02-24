@@ -212,10 +212,10 @@ def main(job_config: JobConfig):
 
     # model_dtype = torch.bfloat16 -> woah!@ !!
     # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
-    model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
+    # model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
-        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+        model = model_cls.from_pretrained(model_name)
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
         del model
 
@@ -224,7 +224,7 @@ def main(job_config: JobConfig):
         if 'llava' in model_name:
             # using different attn_implementation might matter depending on TP, PP, and CP, etc.
             #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
-            model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+            model = model_cls.from_pretrained(model_namee)
             assert len(processor.tokenizer) < model.language_model.lm_head.weight.shape[0]
             assert model.language_model.lm_head.weight.shape[0] % 8 == 0
         else:
@@ -313,7 +313,7 @@ def main(job_config: JobConfig):
             if hasattr(m, "language_model"):
                 setattr(m.language_model.model, 'position_ids', position_ids.to(device_type))
 
-            m.to(model_dtype)
+            #m.to(model_dtype)
             m.train()
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
@@ -325,7 +325,7 @@ def main(job_config: JobConfig):
             # Restore buffers
             for name, buffer in buffers_dict.items():
                 set_nested_attr(model, name, buffer.to(device_type))
-        model.to(model_dtype)
+        #model.to(model_dtype)
         model.train()
         model_parts = [model]
 
@@ -425,8 +425,8 @@ def main(job_config: JobConfig):
             labels = labels.to(device_type)
             optimizers.zero_grad()
 
-            pixel_values=batch['pixel_values'].to(device_type, model_dtype)
-            n_image=batch['n_image'].to(device_type, model_dtype)
+            pixel_values=batch['pixel_values'].to(device_type)
+            n_image=batch['n_image'].to(device_type)
 
             # TODO add to config
             enable_embed_batch = True if (job_config.training.seq_len >= 16384 and job_config.training.batch_size > 1) else False
