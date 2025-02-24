@@ -166,8 +166,6 @@ def main(job_config: JobConfig):
     if job_config.training.dataset == "alfred":
         processor = build_hf_processor(model_name)
         tokenizer = processor.tokenizer
-        #img_data_dir = snapshot_download(repo_id="PEARLS-Lab/alfred-full", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-full')
-        #img_data_dir = snapshot_download(repo_id="bosungkim/alfred-small-img", repo_type="dataset", allow_patterns="*.tar", local_dir='data/alfred-small')
         traj_data_dir = os.environ['TRAJ_DATA_DIR'] 
         img_data_dir = os.environ['IMG_DATA_DIR']
         processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
@@ -175,8 +173,10 @@ def main(job_config: JobConfig):
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
         dataset = ALFREDDataset(processor=processor,
-        traj_data_dir=traj_data_dir,
-        img_data_dir=img_data_dir, max_seq_len=job_config.training.seq_len, world_size=world_size)
+            traj_data_dir=traj_data_dir,
+            img_data_dir=img_data_dir,
+            max_seq_len=job_config.training.seq_len, world_size=world_size,
+            cp_degree=job_config.experimental.context_parallel_degree)
         data_loader = AlfredDataLoader(dp_rank, dataset, 
                                         batch_size=job_config.training.batch_size,
                                         world_size=world_size)
@@ -306,6 +306,7 @@ def main(job_config: JobConfig):
             for name, buffer in buffers_dict.items():
                 #if idx == 0:
                 #    logger.info(f"{name}, {type(buffer)}, {buffer.shape}")
+                # TODO model is LlavaOnevisionForConditionalGeneration here
                 #set_nested_attr(m, name, buffer.to(device_type))
                 setattr(m, name, buffer.to(device_type))
 
@@ -467,9 +468,9 @@ def main(job_config: JobConfig):
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
-                    cp_buffers=[inputs_embeds, labels],
-                    cp_seq_dims=[1, 1],
-                    cp_no_restore_buffers={inputs_embeds, labels},
+                    cp_buffers=[inputs_embeds, labels, position_ids],
+                    cp_seq_dims=[1, 1, 1],
+                    cp_no_restore_buffers={inputs_embeds, labels, position_ids},
                     cp_rotate_method=job_config.experimental.context_parallel_rotate_method,
                 )
                 if parallel_dims.cp_enabled
@@ -502,11 +503,11 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    logits = model.language_model(inputs_embeds=inputs_embeds, 
-                    position_embeddings=position_embeddings,
+                    logits = model.language_model(inputs_embeds=inputs_embeds,
+                    position_ids=position_ids,
                     use_cache=False)
                     loss = loss_fn(logits, labels)
-                    # logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
+                    # logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}, sum: {(labels + torch.tensor([100], device=labels.device)).sum()}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del logits

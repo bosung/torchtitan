@@ -42,8 +42,6 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlavaNextConfig"
 
-import os
-RANK = os.environ['LOCAL_RANK']
 
 # Copied from transformers.models.llava_next.modeling_llava_next.get_anyres_image_grid_shape
 def get_anyres_image_grid_shape(image_size, grid_pinpoints, patch_size):
@@ -590,6 +588,8 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
                     special_image_mask, single_image_features = get_img_feat_and_mask(single_pixel_values, image_num_patches, _input_ids=input_ids[i].unsqueeze(0), n_image=int(n_image[i].item()))
                     inputs_embeds[i] = inputs_embeds[i].masked_scatter(special_image_mask, single_image_features)
             else:
+                pixel_values = pixel_values[0] # batch_size is 1
+                image_num_patches = [2] * int(n_image[0].item())
                 if pixel_values.dim() == 5:
                     _pixel_values_list = [pix_val[:num_patch] for pix_val, num_patch in zip(pixel_values, image_num_patches)]
                     # [batch_size*frames*num_patches, num_channels, height, width] where frames=1 for images
@@ -597,7 +597,7 @@ class LlavaOnevisionForConditionalGeneration(LlavaOnevisionPreTrainedModel, Gene
                 elif pixel_values.dim() != 4:
                     raise ValueError(f"pixel_values of shape {pixel_values.shape}, expect to be of 4 or 5 dimensions")
 
-                image_num_patches = [[2] * int(n_image[0].item())] # n_image = (1, n_img)
+                #image_num_patches = [[2] * int(n_image[0].item())] # n_image = (1, n_img)
                 special_image_mask, image_features = get_img_feat_and_mask(pixel_values, image_num_patches, _input_ids=input_ids, n_image=int(n_image[0].item()))
                 inputs_embeds = inputs_embeds.masked_scatter(special_image_mask, image_features)
 

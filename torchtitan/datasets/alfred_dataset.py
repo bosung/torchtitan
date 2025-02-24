@@ -42,7 +42,8 @@ def pad_to_multiple(tensor, multiple=4, pad_token=0):
     pad_length = (multiple - (length % multiple)) % multiple
     if pad_length > 0:
         pad_tensor = torch.full((tensor.shape[0], pad_length), pad_token, dtype=tensor.dtype)
-        tensor = torch.cat([tensor, pad_tensor], dim=1)
+        # NOTE pad in the head -- for the consistency with inference with CP
+        tensor = torch.cat([pad_tensor, tensor], dim=1)
     return tensor
 
 
@@ -65,6 +66,7 @@ class ALFREDDataset(IterableDataset, Stateful):
         split: str = "train",
         max_seq_len: int = 131072,
         world_size: int = 1,
+        cp_degree: int = 1,
         rank: int = 0,
         infinite: bool = False,
         ignore_index: int = -100,
@@ -75,11 +77,13 @@ class ALFREDDataset(IterableDataset, Stateful):
         self.processor = processor
         self.max_seq_len = max_seq_len
         self.infinite = infinite
+        self.img_tok_id = processor.tokenizer('<image>').input_ids[0]
         self.act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
         self.eos_tok_id = processor.tokenizer.eos_token_id
         self.ignore_index = ignore_index
         self.eval = eval
         self.world_size = world_size
+        self.cp_degree = cp_degree
 
         # if not self.eval:
         #     self.max_seq_len = 131072
@@ -144,6 +148,9 @@ class ALFREDDataset(IterableDataset, Stateful):
 
                 act_tok = False
                 for i, l in enumerate(labels[0]):
+                    if l == self.img_tok_id:
+                        continue
+
                     if (not act_tok) and l == self.act_tok_id: # 151648
                         act_tok = True
                         continue
@@ -157,11 +164,18 @@ class ALFREDDataset(IterableDataset, Stateful):
                 input_ids = output.input_ids[:, :-1]
                 labels = labels[:, 1:]
 
+                if self.cp_degree > 1:
+                    input_ids = pad_to_multiple(input_ids, self.cp_degree * 2, pad_token=self.eos_tok_id)
+                    labels = pad_to_multiple(labels, self.cp_degree * 2, pad_token=self.ignore_index)
+                else:
+                    input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)
+                    labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)
+
                 yield {
-                    'input_ids': pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id), # Pad for TP. 8 covers most cases.
+                    'input_ids': input_ids,
                     'pixel_values': output.pixel_values, 
                     'image_sizes': output.image_sizes,
-                    'labels': pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index),
+                    'labels': labels
                 }
 
     def _load_sample(self, traj, chunk=True):
@@ -338,7 +352,7 @@ class ALFREDDataset(IterableDataset, Stateful):
 
 class AlfredDataLoader(StatefulDataLoader, Stateful):
     
-    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, world_size: int):    
+    def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, world_size: int):
         super().__init__(hf_ds, batch_size, collate_fn=self.collate_fn)
 
     @staticmethod
