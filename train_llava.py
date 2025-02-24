@@ -318,7 +318,7 @@ def main(job_config: JobConfig):
     else:
         # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
         train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
-        model.to_empty(device=init_device)    
+        model.to_empty(device=init_device)
         with torch.no_grad():
             state_dict = {"model": model.state_dict()}
             dcp.load(state_dict, checkpoint_id=checkpoint_path)
@@ -328,7 +328,7 @@ def main(job_config: JobConfig):
         #model.to(model_dtype)
         model.train()
         model_parts = [model]
-
+    
     device_mem_stats = device_memory_monitor.get_peak_stats()
     logger.info(
         f"{device_type.upper()} memory usage for model: "
@@ -416,6 +416,7 @@ def main(job_config: JobConfig):
                 batch = next(data_iterator)
             except StopIteration:
                 data_iterator = iter(data_loader)
+                batch = next(data_iterator)
             
             input_ids, labels = batch['input_ids'], batch['labels']
             ntokens_since_last_log += labels.numel()
@@ -455,7 +456,7 @@ def main(job_config: JobConfig):
             # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
             # if not (parallel_dims.cp_enabled and (parallel_dims.pp_enabled and has_first_stage)):
             # TODO let's do not use pass here
-            if parallel_dims.tp_enabled:
+            if parallel_dims.tp_enabled and (not parallel_dims.cp_enabled):
                 if parallel_dims.pp_enabled and not has_first_stage:
                     pass
                 else:
@@ -507,7 +508,7 @@ def main(job_config: JobConfig):
                     position_ids=position_ids,
                     use_cache=False)
                     loss = loss_fn(logits, labels)
-                    # logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}, sum: {(labels + torch.tensor([100], device=labels.device)).sum()}")
+                    logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del logits
