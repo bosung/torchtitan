@@ -203,25 +203,25 @@ class ALFREDDataset(IterableDataset, Stateful):
         return chunks
 
     def _load_traj_data(self):
-        # self.traj_data = [x for x in load_dataset("bosungkim/alfred-small-traj", split=self.split)]
-        #self.traj_data = load_dataset("bosungkim/alfred-small-traj", split=self.split)
         directory_path = self.traj_data_dir
+        all_files = []
         for root, _, files in os.walk(directory_path):
             for file in files:
-                # Check if file is a .txt file
                 if file.endswith('.txt'):
                     file_path = os.path.join(root, file)
-                    try:
-                        # Read and parse the JSON content
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            #json_content = json.load(f)
-                            # Add file path as metadata
-                            #json_content['_file_path'] = file_path
-                            self.traj_data.append({'text': f.read(), 'filename': file})
-                    except json.JSONDecodeError as e:
-                        print(f"Error parsing JSON from {file_path}: {str(e)}")
-                    except Exception as e:
-                        print(f"Error reading file {file_path}: {str(e)}")
+                    all_files.append((file_path, file))
+        
+        # Sort the file paths to ensure consistent order
+        all_files.sort(key=lambda x: x[1]) # Sort by filename
+        
+        for file_path, file in all_files:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    self.traj_data.append({'text': f.read(), 'filename': file})
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON from {file_path}: {str(e)}")
+            except Exception as e:
+                print(f"Error reading file {file_path}: {str(e)}")
 
     def seq_preprocess(self, traj, sparse_frame=False):
         # Prepare: low_idx_to_image
