@@ -96,26 +96,8 @@ def main(
 
     logger.info(f"World Size: {world_size}, Local Rank: {local_rank} on {device}")
 
-    # Init distributed
-    parallel_dims = ParallelDims(
-        dp_shard=config.training.data_parallel_shard_degree,
-        dp_replicate=config.training.data_parallel_replicate_degree,
-        cp=config.experimental.context_parallel_degree,
-        tp=config.training.tensor_parallel_degree,
-        pp=config.experimental.pipeline_parallel_degree,
-        world_size=world_size,
-    )
-    utils.init_distributed(config)
-    # Build world mesh for parallelism
-    world_mesh = parallel_dims.build_mesh(device_type=device_type)
+    dp_degree, dp_rank = 1, 0
 
-    if parallel_dims.dp_enabled:
-        dp_mesh = world_mesh["dp"]
-        dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
-    else:
-        dp_degree, dp_rank = 1, 0
-
-    utils.set_determinism(world_mesh, device, seed, deterministic)
     model_name = config.model.name
 
     # Tokenizer setup
@@ -126,12 +108,13 @@ def main(
     processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
     dataset = ALFREDDataset(
         processor=processor,
-        traj_data_dir=traj_data_dir,
-        img_data_dir=img_data_dir,
-        cp_degree=config.experimental.context_parallel_degree,
+        traj_data_dir='data/alfred/train_small_traj',
+        img_data_dir='data/alfred/train_small_img',
+        cp_degree=1,
         eval=True)
-    data_loader = AlfredDataLoader(dp_rank, dataset, batch_size=1, world_size=world_size)
+    # data_loader = AlfredDataLoader(dp_rank, dataset, batch_size=1, world_size=world_size)
 
+    model_dtype = torch.bfloat16
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model_cls = LlavaOnevisionForConditionalGeneration
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
@@ -139,20 +122,11 @@ def main(
         del model
 
     # model
-    init_device = "meta" if world_size > 1 else device_type
+    init_device = "cuda"
     with torch.device(init_device):
         logger.info(f"Init model on init_device: {init_device}")
-        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, device_map='auto')
 
-    # apply parallelisms and initialization
-    parallelize_llava(model, world_mesh, parallel_dims, config)
-    model.to_empty(device=init_device)
-    with torch.no_grad():
-        state_dict = {"model": model.state_dict()}
-        dcp.load(state_dict, checkpoint_id=checkpoint_path)
-        # Restore buffers
-        for name, buffer in buffers_dict.items():
-            set_nested_attr(model, name, buffer.to(device_type))
     model.eval()
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
@@ -162,44 +136,48 @@ def main(
         f"({device_mem_stats.max_reserved_pct:.2f}%)"
     )
 
-    # setting context 
-    train_context = utils.get_train_context(False, False)
-
     device_memory_monitor.reset_peak_stats()
     
-    rank = dist.get_rank()
-
     ###################################################
 
-    if rank == 0: # run only for rank = 0
-        env = ThorEnv() 
-    else:
-        env = None
+    env = ThorEnv()
     
     from eval_subgoals import EvalSubgoals
-
     eval_subgoals = EvalSubgoals()
 
-    for j, batch in enumerate(data_loader):
+    for j, batch in enumerate(dataset):
         logger.info(f"Test id {j}")
-        
         traj = batch
-        logger.info(f"{traj.keys()}")
-        task = batch['task'][0]
-        traj = batch['traj'][0]
-        r_idx = task['repeat_idx']
-        subgoal_idxs = [sg['high_idx'] for sg in traj['plan']['high_pddl'] if sg['discrete_action']['action'] in subgoals_to_evaluate]
+
+        # batch['task_type'] = 'pick_and_place_with_movable_recep'
+        # batch['pddl_params'] = {'mrecep_target': 'Pan', 'object_sliced': True, 'object_target': 'Apple', 'parent_target': 'CounterTop', 'toggle_target': ''}
+        #task = batch['task'][0]
         
-        # setup the test traj
+        # eval_subgoals.setup_scene(env, traj)
+        subgoal_idxs = eval_subgoals.get_subgoal_idx(traj)
         
         for eval_idx in subgoal_idxs:
-            for _ in range(max_trial):
-                EvalSubgoals.evaluate(env, gen_fn,
-                processor, eval_idx, r_idx, traj_data,
-                args, successes, failures, results)
+            max_trial = 3
 
-                batch = EvalSubgoals.prepare_inputs(traj, subgoal_idxs, )
-                generated_tokens = generate(model, batch)
+            # context: text and image list
+            context, img_list = eval_subgoals.simulate_with_expert(env, traj, processor, eval_idx)
+            breakpoint()
+
+            batch = processor(images=img_list, text=context, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
+            print("Input shape: ", batch.input_ids.shape)
+            
+            # # break if max_steps reached ?
+            done = False
+
+            #t = eval_subgoals.time_step()
+            while not done:
+                # break if max_steps reached
+                # if t >= max_steps + len(expert_init_actions):
+                #     break
+
+                #if rank == 0:
+                # broadcast batch
+                generated_tokens = generate(model, inputs)
                 gc.collect()
 
                 if rank == 0:
@@ -304,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
+        default="distributed_checkpoints/",
         help="Checkpoint path to load (required)",
     )
     parser.add_argument(

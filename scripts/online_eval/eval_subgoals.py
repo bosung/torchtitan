@@ -5,6 +5,8 @@ import json
 import numpy as np
 from PIL import Image
 from datetime import datetime
+import time
+import random
 #from .env.thor_env import ThorEnv
 #from eval.eval import Eval
 
@@ -14,74 +16,112 @@ from datetime import datetime
 import torch
 from torch.cuda.amp import autocast
 
+import torch.distributed as dist
+
+
+ACT_TEMPLATE = {
+    "RotateLeft": "RotateLeft",
+    "RotateRight": "RotateRight",
+    "MoveAhead": "MoveAhead",
+    "LookUp": "LookUp",
+    "LookDown": "LookDown",
+    "OpenObject": "OpenObject [object]",
+    "CloseObject": "CloseObject [object]",
+    "PickupObject": "PickupObject [object]",
+    "PutObject": "PutObject [object] [receptacle]",
+    "ToggleObjectOn": "ToggleObjectOn [object]",
+    "ToggleObjectOff": "ToggleObjectOff [object]",
+    "SliceObject": "SliceObject [object]",
+    "NoOp": "NoOp",}
+
+
+def serialize_action(act):
+    if act['action'].find("_") >= 0:
+        act['action'] = act['action'].split("_")[0]
+    
+    template = ACT_TEMPLATE[act['action']]
+    if 'objectId' in act:
+        template = template.replace("[object]", act['objectId'].split("|")[0])
+    if 'receptacleObjectId' in act:
+        template = template.replace("[receptacle]", act['receptacleObjectId'].split("|")[0])
+    return template
+
+
 class EvalSubgoals():
     '''
     evaluate subgoals by teacher-forching expert demonstrations
     '''
 
-    def __init__(self, args, model):
-        # args and manager
-        self.args = args
+    # subgoal types
+    ALL_SUBGOALS = ['GotoLocation', 'PickupObject', 'PutObject', 'CoolObject', 'HeatObject', 'CleanObject', 'SliceObject', 'ToggleObject']
 
-        # load splits
-        with open(self.args.splits) as f:
-            self.splits = json.load(f)
-            pprint.pprint({k: len(v) for k, v in self.splits.items()})
-
-        self.model = model
-
-        # gpu
-        if self.args.gpu:
-            self.model = self.model.to(torch.device('cuda'))
-
+    def __init__(self):
         # success and failure lists
         self.create_stats()
+
+        # make subgoals list
+        self.subgoals_to_evaluate = self.ALL_SUBGOALS # if args.subgoals.lower() == "all" else args.subgoals.split(',')
+        #subgoals_to_evaluate = [sg for sg in subgoals_to_evaluate if sg in cls.ALL_SUBGOALS]
+
+        # create empty stats per subgoal
+        for sg in self.subgoals_to_evaluate:
+            self.successes[sg] = list()
+            self.failures[sg] = list()
 
         # set random seed for shuffling
         random.seed(int(time.time()))
 
-    # subgoal types
-    ALL_SUBGOALS = ['GotoLocation', 'PickupObject', 'PutObject', 'CoolObject', 'HeatObject', 'CleanObject', 'SliceObject', 'ToggleObject']
+    def get_subgoal_idx(self, traj):
+        return [sg['high_idx'] for sg in traj['plan']['high_pddl'] if sg['discrete_action']['action'] in self.subgoals_to_evaluate]
 
     @classmethod
-    def setup_scene(cls, env, traj_data, r_idx, args, reward_type='dense'):
+    def setup_scene(cls, env, traj, reward_type='dense'):
         '''
         intialize the scene and agent from the task info
         '''
         # scene setup
-        scene_num = traj_data['scene']['scene_num']
-        object_poses = traj_data['scene']['object_poses']
-        dirty_and_empty = traj_data['scene']['dirty_and_empty']
-        object_toggles = traj_data['scene']['object_toggles']
+        scene_num = traj['scene']['scene_num']
+        object_poses = traj['scene']['object_poses']
+        dirty_and_empty = traj['scene']['dirty_and_empty']
+        object_toggles = traj['scene']['object_toggles']
 
         scene_name = 'FloorPlan%d' % scene_num
-        env.reset(scene_name)
-        env.restore_scene(object_poses, object_toggles, dirty_and_empty)
+        last_event = env.reset(scene_name)
 
+        # update objectName bc obj name are different from ai2thor versions
+        objname_dict = {obj['name'].split("_")[0]: obj['name'] for obj in last_event.metadata['objects']}
+        valid_object_poses = []
+        for obj_pose in object_poses:
+            name = obj_pose['objectName'].split("_")[0]
+            if name in objname_dict and objname_dict[name] != obj_pose['objectName']:
+                obj_pose.update({"objectName": objname_dict[name]})
+                valid_object_poses.append(obj_pose)
+        
+        last_event = env.restore_scene(valid_object_poses, object_toggles, dirty_and_empty)
+        if not last_event.metadata['lastActionSuccess']:
+            raise ValueError("Due to the ai2thor version conflicts.")
+        
         # initialize to start position
-        env.step(dict(traj_data['scene']['init_action']))
-
-        '''
-        # updated for ai2thor 5.0.0 (previously 2.0.1)
-        new_act = dict(
-            action=traj_data['scene']['init_action']['action'],
-            horizon=traj_data['scene']['init_action']['horizon'],
+        # updated for ai2thor 5.0.0 (previously 2.1.0)
+        init_act = dict(
+            action=traj['scene']['init_action']['action'],
+            horizon=traj['scene']['init_action']['horizon'],
             position={
-                'x': traj_data['scene']['init_action']['x'],
-                'y': traj_data['scene']['init_action']['y'],
-                'z': traj_data['scene']['init_action']['z'],
+                'x': traj['scene']['init_action']['x'],
+                'y': traj['scene']['init_action']['y'],
+                'z': traj['scene']['init_action']['z'],
             },
-            rotation={'x': 0, 'y': traj_data['scene']['init_action']['rotation'], 'z': 0},
+            rotation={'x': 0, 'y': traj['scene']['init_action']['rotation'], 'z': 0},
             standing=True
         )
-        env.step(new_act)
-        '''
+        env.step(init_act)
 
         # print goal instr
-        print("Task: %s" % (traj_data['turk_annotations']['anns'][r_idx]['task_desc']))
-
+        print(f"Task: {traj['task_type']} {traj['pddl_params']}")
+        
         # setup task for reward
-        env.set_task(traj_data, args, reward_type=reward_type)
+        env.set_task(traj, reward_type=reward_type)
+
     """
     @classmethod
     def run(cls, model, processor, eval_dataloader, args, successes, failures, results):
@@ -114,16 +154,19 @@ class EvalSubgoals():
         # stop THOR
         env.stop()
     """
-    @classmethod
-    def evaluate(cls, env, generate_fn, processor, eval_idx, r_idx, traj_data, args, successes, failures, results, teacher_forcing=True):
-        # setup scene
-        reward_type = 'dense'
-        cls.setup_scene(env, traj_data, r_idx, args, reward_type=reward_type)
 
+    def simulate_with_expert(self, env, traj_data, processor, eval_idx, teacher_forcing=True, max_steps=2000):
+        
+        # setup scene
+        # TODO
+        reward_type = 'dense'
+        self.setup_scene(env, traj_data, reward_type=reward_type)
+        
         # expert demonstration to reach eval_idx-1
         expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
 
         # subgoal info
+        r_idx = 0
         subgoal_action = traj_data['plan']['high_pddl'][eval_idx]['discrete_action']['action']
         subgoal_instr = traj_data['turk_annotations']['anns'][r_idx]['high_descs'][eval_idx]
         subgoal_instrs = traj_data['turk_annotations']['anns'][r_idx]['high_descs']
@@ -139,17 +182,20 @@ class EvalSubgoals():
         t, fails, reward = 0, 0, 0
         prev_subgoal_idx, curr_subgoal_idx = -1, 0
         prev_high_idx = -1
-        rtg = 1.0
         fail_from_len_limit = False
         
         # for model inputs
-        sequence, token_type_ids = [], []
+        self.sequence, self.token_type_ids = [], []
+        self.img_list = []
+
+        prefix = ""
+        main_goal_str = "Your main goal: "
+        if 'turk_annotations' in traj_data:
+            main_goal_str += traj_data['turk_annotations']['anns'][0]['task_desc']
+        prefix = main_goal_str
 
         # Do expert action here:
         for t, action in enumerate(expert_init_actions):
-            # get expert action
-            # action = expert_init_actions[t]
-            # expert_r, expert_rtg = expert_rewards[t]
             curr_high_idx = traj_data['plan']['low_actions'][t]['high_idx']
             if  curr_high_idx > prev_high_idx:
                 sequence.append(subgoal_instrs[curr_high_idx])
@@ -157,154 +203,111 @@ class EvalSubgoals():
                 token_type_ids.append( 'lang' )
                 prev_high_idx = curr_high_idx
 
-            # (3) add RTG
-            if not args.no_reward:
-                sequence.append(rtg)
-                token_type_ids.append('rtg')
-
             # (2) add image
             # extract visual feats
             curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-            # feat['frames'] = resnet.featurize([curr_image], batch=1).unsqueeze(0)
-            # img_feat = resnet.featurize([curr_image], batch=1).squeeze(0) # shape: (512, 7, 7)
-            
+        
             sequence.append(curr_image)
             token_type_ids.append('img')
+            self.img_list.append(curr_image)
+            prefix += "<image>"
 
-            compressed_mask = action['args']['mask'] if 'mask' in action['args'] else None
-            mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
+            # compressed_mask = action['args']['mask'] if 'mask' in action['args'] else None
+            # mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
             
-            sequence.append(serialize_action(action))
+            act_str = serialize_action(action)
+            sequence.append(act_str)
             token_type_ids.append('action')
+            prefix += act_str
 
+            breakpoint()
             # execute expert action
-            success, _, _, err, _ = env.va_interact(action['action'], interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
-            if not success:
-                print ("expert initialization failed")
-                break
-
-            # update transition reward
-            t_reward, _ = env.get_transition_reward()
-        
-            # set RTG for next action
-            unnormed_rtg -= t_reward
-            rtg = (unnormed_rtg)/norm_factor # normalize
-
-            #if args.debug: 
-            # print(f"(expert) t: {t}, Finished: {env.get_subgoal_idx()}, Pred: {action['action']}, success: {success}, t_reward: {t_reward}, RTG: {unnormed_rtg}, RTG (normed): {rtg}")
+            last_event = env.step(action['action'], smooth_nav=args.smooth_nav, debug=args.debug)
+            if not last_event.metadata['lastActionSuccess']:
+                raise ValueError("expert initialization failed")
 
         # Done with expert actions
-
         finished = env.get_subgoal_idx()
 
         #assert finished == (eval_idx - 1)
-
         prev_high_idx = finished
         curr_high_idx = eval_idx
 
-        sequence.append(subgoal_instrs[eval_idx])
+        self.sequence.append(subgoal_instrs[eval_idx])
         print(f"\t-----> New subgoal [{eval_idx}] is set: {subgoal_instrs[eval_idx]}")
-        token_type_ids.append( 'lang' )
+        self.token_type_ids.append( 'lang' )
 
-        prev_lookups = []
-        prev_act = ''
-        while not done:
-            
-            # break if max_steps reached
-            if t >= args.max_steps + len(expert_init_actions):
-                break
-            
-            # (3) add RTG
-            if not args.no_reward:
-                sequence.append(rtg)
-                token_type_ids.append('rtg')
+        # (2) add image
+        curr_image = Image.fromarray(np.uint8(env.last_event.frame))
 
-            # (2) add image
-            curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+        self.sequence.append(curr_image)
+        self.token_type_ids.append('img')
+        self.img_list.append(curr_image)
+        prefix += "<image>"
+        
+        prompt = prefix + "<|act|>"
 
-            sequence.append(curr_image)
-            token_type_ids.append('img')
+        return prompt, self.img_list
 
-            # Model evaluation
-            prefix = f"<|im_start|>user \n You are an agent to perform daily tasks. Your main goal is '{task_desc}'. "
+    def interact_with_env(cls, env, action):
+        prev_act = action
 
-            img_list = []
-            for seq in sequence[:-1]:
-                if isinstance(seq, str):
-                    prefix += f"Your current plan is '{seq}'. "
+        sequence.append(action)
+        token_type_ids.append('action')
+
+        try:
+            # convert act to api_action
+            if 'object' in action:
+                obj_id = post_processing_action(action, env)
+                if obj_id:
+                    event, action = env.to_thor_api_exec(action, obj_id)
+                    t_success = True if event.metadata['lastActionSuccess'] else False
+                    #print(f't: {t}, t_success: {t_success}, action: {action}')
                 else:
-                    prefix += f"<image> "
-                    img_list.append(seq)
+                    t_success = False
+            elif action not in cls.TERMINAL_TOKENS:
+                # use predicted action and mask (if provided) to interact with the env
+                mask = None
+                t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=False, debug=False)
+                # output:
+                # t_success (bool), <ai2thor.server.Event object at 0x702d0a99d9e8>, "", "", {'action': 'MoveAhead', 'forceAction': True}
+        except:
+            t_success = False
+
+        if not t_success:
+            fails += 1
+            if fails >= args.max_fails:
+                print("Interact API failed %d times" % (fails) + "; latest error '%s'" % err)
+                return False
+
+        # next time-step
+        t_reward, t_done = env.get_transition_reward() # type: (float, bool)
+        reward += t_reward
+
+        # debug
+        # print(f"t: {t}, Expert: {traj_data['plan']['low_actions'][t]['api_action']['action']} | {traj_data['plan']['low_actions'][t]['api_action']}")
+        gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
+        print(f"t: {t}, Pred: {action} (GT: {gt_action}), success: {t_success}, Finished: {env.get_subgoal_idx()}")
+
+        # update subgoals
+        finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
+        # curr_subgoal_idx = finished + 1
+        if finished == eval_idx:
+            subgoal_success = True
+            return False
             
-            prompt = prefix 
-            img_list.append(sequence[-1])
+        # terminal tokens predicted
+        if action in cls.TERMINAL_TOKENS:
+            print("predicted %s" % action)
+            return False
 
-            inputs = processor(images=img_list, text=prompt, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
-            print("Input shape: ", inputs.input_ids.shape)
+        # increment time index
+        t += 1
 
-            #output = model(**inputs)
-            #model.language_model.config.rope_theta = 10000000.0
+        return True
+        # ===============================================
 
-            output = generate_fn(**inputs, max_new_tokens=5, pad_token_id=processor.tokenizer.eos_token_id)
-            decoded_output = processor.batch_decode(output, skip_special_tokens=True)
-            print(decoded_output[0])
-
-            action = decoded_output[0]
-
-            prev_act = action
-
-            sequence.append(action)
-            token_type_ids.append('action')
-
-            try:
-                # convert act to api_action
-                if 'object' in action:
-                    obj_id = post_processing_action(action, env)
-                    if obj_id:
-                        event, action = env.to_thor_api_exec(action, obj_id)
-                        t_success = True if event.metadata['lastActionSuccess'] else False
-                        #print(f't: {t}, t_success: {t_success}, action: {action}')
-                    else:
-                        t_success = False
-                elif action not in cls.TERMINAL_TOKENS:
-                    # use predicted action and mask (if provided) to interact with the env
-                    mask = None
-                    t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=args.smooth_nav, debug=args.debug)
-                    # output:
-                    # t_success (bool), <ai2thor.server.Event object at 0x702d0a99d9e8>, "", "", {'action': 'MoveAhead', 'forceAction': True}
-            except:
-                t_success = False
-
-            if not t_success:
-                fails += 1
-                if fails >= args.max_fails:
-                    print("Interact API failed %d times" % (fails) + "; latest error '%s'" % err)
-                    break
-
-            # next time-step
-            t_reward, t_done = env.get_transition_reward() # type: (float, bool)
-            reward += t_reward
-
-            # debug
-            # print(f"t: {t}, Expert: {traj_data['plan']['low_actions'][t]['api_action']['action']} | {traj_data['plan']['low_actions'][t]['api_action']}")
-            gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
-            print(f"t: {t}, Pred: {action} (GT: {gt_action}), success: {t_success}, Finished: {env.get_subgoal_idx()}")
-
-            # update subgoals
-            finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
-            # curr_subgoal_idx = finished + 1
-            if finished == eval_idx:
-                subgoal_success = True
-                break
-                
-            # terminal tokens predicted
-            if action in cls.TERMINAL_TOKENS:
-                print("predicted %s" % action)
-                break
-
-            # increment time index
-            t += 1
-
+    def metrics():
         # metrics
         pl = float(t - len(expert_init_actions)) + 1 # +1 for last action
         expert_pl = len([ll for ll in traj_data['plan']['low_actions'] if ll['high_idx'] == eval_idx])

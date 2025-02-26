@@ -1,8 +1,9 @@
+import os
 import json
 import numpy as np
 from env_utils.gen.graph import graph_obj
 from env_utils.gen.utils.game_util import get_objects_with_name_and_prop
-from env_utils.env.reward import get_action
+from env_utils.env.reward import get_action, REWARD_MAP
 
 
 class BaseTask(object):
@@ -10,11 +11,10 @@ class BaseTask(object):
     base class for tasks
     '''
 
-    def __init__(self, traj, env, args, reward_type='sparse', max_episode_length=2000):
+    def __init__(self, traj, env, reward_type='sparse', max_episode_length=2000):
         # settings
         self.traj = traj
         self.env = env
-        self.args = args
         self.task_type = self.traj['task_type']
         self.max_episode_length = max_episode_length
         self.reward_type = reward_type
@@ -32,19 +32,22 @@ class BaseTask(object):
 
         # reward config
         self.reward_config = None
-        self.load_reward_config(args.reward_config)
+        self.load_reward_config()
         self.strict = 'strict' in reward_type
 
         # prev state
         self.prev_state = self.env.last_event
 
-    def load_reward_config(self, config_file):
+    def load_reward_config(self, config_file='rewards.config'):
         '''
         load json file with reward values
         '''
-        with open(config_file, 'r') as rc:
-            reward_config = json.load(rc)
-        self.reward_config = reward_config
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as rc:
+                reward_config = json.load(rc)
+            self.reward_config = reward_config
+        else:
+            self.reward_config = REWARD_MAP
 
     def load_nav_graph(self):
         '''
@@ -466,11 +469,11 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
         super().reset()
 
 
-def get_task(task_type, traj, env, args, reward_type='sparse', max_episode_length=2000):
+def get_task(task_type, traj, env, reward_type='sparse', max_episode_length=2000):
     task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
     
     if task_class_str in globals():
         task = globals()[task_class_str]
-        return task(traj, env, args, reward_type=reward_type, max_episode_length=max_episode_length)
+        return task(traj, env, reward_type=reward_type, max_episode_length=max_episode_length)
     else:
         raise Exception("Invalid task_type %s" % task_class_str)

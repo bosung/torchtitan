@@ -36,10 +36,8 @@ from torchtitan.config_manager import JobConfig
 from torchtitan.datasets import build_tokenizer
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_device_memory_monitor
-from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.parallelisms import ParallelDims
-from torchtitan.parallelisms.parallelize_llava import parallelize_llava, apply_partial_fsdp
-from torchtitan.parallelisms.pipeline_llama import pipeline_llama_manual_split
+from torchtitan.models.llava_onevision.parallelize_llava import parallelize_llava
 from torchtitan.utils import device_module, device_type
 
 from torchtitan.datasets.hf_datasets import DPAwareDataLoader
@@ -130,7 +128,7 @@ def test_generate(
         dataset = MyDataset(processor=processor)
         #dataset = MyDataset(tokenizer=processor.tokenizer)
 
-    data_loader = DPAwareDataLoader(dp_rank, dataset, batch_size=batch_size)
+    data_loader = DPAwareDataLoader(dp_rank, dataset, batch_size=batch_size, world_size=world_size)
 
     # model
     # model_config = models_config[model_name][config.model.flavor]
@@ -198,11 +196,11 @@ def test_generate(
 
         # TODO: why there is one more dim? [1, 1, seq_len]
         input_ids = batch.input_ids[0].to(device)
-        pixel_values = batch.pixel_values[0].to(device)
+        pixel_values = batch.pixel_values.to(device)
         #pixel_values = batch.pixel_values[0].to(torch.float32)
-        image_sizes = batch.image_sizes[0].to(device)
+        #image_sizes = batch.image_sizes[0].to(device)
 
-        logger.info(f"Test id {j}: input_ids shape = {input_ids.shape}, {type(input_ids)}")
+        logger.info(f"Test id {j}: input_ids shape = {input_ids.shape}, {type(input_ids)} / pixel_values: {pixel_values.shape}")
 
         seq_len = input_ids.shape[1]
         pad_size = max(max_new_tokens, (world_size * 2) - (seq_len % (world_size * 2)))
@@ -220,11 +218,12 @@ def test_generate(
 
         logger.info(f"embed_tokens: {type(model.language_model.model.embed_tokens.weight)}")
         # get context embeds (done in distributed)
+        n_image = torch.tensor([[pixel_values.shape[1]]], device=device)
         with torch.no_grad():
             context_embeds = model.embed(
                 input_ids=input_ids,
                 pixel_values=pixel_values,
-                image_sizes=image_sizes)
+                n_image=n_image)
 
         logger.info(f"context_embeds: {type(context_embeds)}, {context_embeds.shape}, {context_embeds.dtype}")
 

@@ -8,7 +8,7 @@ from ai2thor.controller import Controller
 import env_utils.gen.utils.image_util as image_util
 from env_utils.gen.utils import game_util
 from env_utils.gen.utils.game_util import get_objects_of_type, get_obj_of_type_closest_to_obj
-
+import ai2thor.platform
 
 DEFAULT_RENDER_SETTINGS = {'renderImage': True,
                            'renderDepthImage': False,
@@ -26,11 +26,13 @@ class ThorEnv(Controller):
                  quality='MediumCloseFitShadows',
                  build_path=constants.BUILD_PATH):
 
-        super().__init__(quality=quality)
-        self.local_executable_path = build_path
-        self.start(x_display=x_display,
-                   height=player_screen_height,
-                   width=player_screen_width)
+        #super().__init__(quality=quality)
+        # controller = ai2thor.controller.Controller(platform=ai2thor.platform.CloudRendering, scene='FloorPlan28')
+        super().__init__(platform=ai2thor.platform.CloudRendering)
+        # self.local_executable_path = build_path
+        # self.start(x_display=x_display,
+        #            height=player_screen_height,
+        #            width=player_screen_width)
         self.task = None
 
         # internal states
@@ -77,8 +79,8 @@ class ThorEnv(Controller):
 
         # reset task if specified
         # TODO ai2thor migration
-        # if self.task is not None:
-        #     self.task.reset()
+        if hasattr(self, "task") and self.task is not None:
+            self.task.reset()
 
         # clear object state changes
         self.reset_states()
@@ -118,14 +120,16 @@ class ThorEnv(Controller):
             super().step(dict(action='SetStateOfAllObjects',
                                StateChange="CanBeFilled",
                                forceAction=False))
-        super().step((dict(action='SetObjectPoses', objectPoses=object_poses)))
 
-    def set_task(self, traj, args, reward_type='sparse', max_episode_length=2000):
+        last_event = super().step((dict(action='SetObjectPoses', objectPoses=object_poses)))
+        return last_event
+
+    def set_task(self, traj, reward_type='sparse', max_episode_length=2000):
         '''
         set the current task type (one of 7 tasks)
         '''
         task_type = traj['task_type']
-        self.task = get_task(task_type, traj, self, args, reward_type=reward_type, max_episode_length=max_episode_length)
+        self.task = get_task(task_type, traj, self, reward_type=reward_type, max_episode_length=max_episode_length)
 
     def step(self, action, smooth_nav=False):
         '''

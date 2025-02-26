@@ -121,62 +121,62 @@ class ALFREDDataset(IterableDataset, Stateful):
             print(f"Loading a new example ... ")
 
             if self.eval:
-                yield traj
+                yield json.loads(traj['text'])
+            else:
+                chunks = self._load_sample(traj, chunk=True)
 
-            chunks = self._load_sample(traj, chunk=True)
+                if not isinstance(chunks, list):
+                    chunks = [chunks]
 
-            if not isinstance(chunks, list):
-                chunks = [chunks]
-
-            for ci, chunk in enumerate(chunks):
-                n_img_token = chunk['lang_input'].count('<image>')
-                # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
-                if len(chunk['img_list']) == 0:
-                    logger.warning(f"len(chunk['img_list']) == 0, chunk['lang_input']: {chunk['lang_input']}")
-                    continue
-                if len(chunk['img_list']) != n_img_token:
-                    logger.warning(f"Some images are missed -- expected {n_img_token}, but {len(chunk['img_list'])}")
-                    logger.warning(f"len(chunk['img_list']): {len(chunk['img_list'])}, len(chunk['lang_input']): {len(chunk['lang_input'])}, chunk['lang_input']: {chunk['lang_input']}")
-                    continue # raise ValueError()
-
-                output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
-
-                if self.eval:
-                    yield output
-
-                labels = output.input_ids.clone()
-
-                act_tok = False
-                for i, l in enumerate(labels[0]):
-                    if l == self.img_tok_id:
+                for ci, chunk in enumerate(chunks):
+                    n_img_token = chunk['lang_input'].count('<image>')
+                    # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
+                    if len(chunk['img_list']) == 0:
+                        logger.warning(f"len(chunk['img_list']) == 0, chunk['lang_input']: {chunk['lang_input']}")
                         continue
+                    if len(chunk['img_list']) != n_img_token:
+                        logger.warning(f"Some images are missed -- expected {n_img_token}, but {len(chunk['img_list'])}")
+                        logger.warning(f"len(chunk['img_list']): {len(chunk['img_list'])}, len(chunk['lang_input']): {len(chunk['lang_input'])}, chunk['lang_input']: {chunk['lang_input']}")
+                        continue # raise ValueError()
 
-                    if (not act_tok) and l == self.act_tok_id: # 151648
-                        act_tok = True
-                        continue
+                    output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
+
+                    if self.eval:
+                        yield output
+
+                    labels = output.input_ids.clone()
+
+                    act_tok = False
+                    for i, l in enumerate(labels[0]):
+                        if l == self.img_tok_id:
+                            continue
+
+                        if (not act_tok) and l == self.act_tok_id: # 151648
+                            act_tok = True
+                            continue
+                        
+                        if (not act_tok) and l != self.act_tok_id:
+                            labels[0][i] = self.ignore_index
+
+                        if act_tok and l == self.act_tok_id:
+                            act_tok = False
                     
-                    if (not act_tok) and l != self.act_tok_id:
-                        labels[0][i] = self.ignore_index
+                    input_ids = output.input_ids[:, :-1]
+                    labels = labels[:, 1:]
 
-                    if act_tok and l == self.act_tok_id:
-                        act_tok = False
-                
-                input_ids = output.input_ids[:, :-1]
-                labels = labels[:, 1:]
+                    if self.cp_degree > 1:
+                        input_ids = pad_to_multiple(input_ids, self.cp_degree * 2, pad_token=self.eos_tok_id)
+                        labels = pad_to_multiple(labels, self.cp_degree * 2, pad_token=self.ignore_index)
+                    else:
+                        input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)
+                        labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)
 
-                if self.cp_degree > 1:
-                    input_ids = pad_to_multiple(input_ids, self.cp_degree * 2, pad_token=self.eos_tok_id)
-                    labels = pad_to_multiple(labels, self.cp_degree * 2, pad_token=self.ignore_index)
-                else:
-                    input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)
-                    labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)
-
-                yield {
-                    'input_ids': input_ids,
-                    'pixel_values': output.pixel_values, 
-                    'image_sizes': output.image_sizes,
-                    'labels': labels
-                }
+                    yield {
+                        'input_ids': input_ids,
+                        'pixel_values': output.pixel_values, 
+                        'image_sizes': output.image_sizes,
+                        'labels': labels
+                    }
 
     def _load_sample(self, traj, chunk=True):
         # with S3

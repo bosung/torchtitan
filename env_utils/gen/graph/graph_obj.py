@@ -5,7 +5,7 @@ import time
 import networkx as nx
 import numpy as np
 
-import env_utils.gen.constants
+import env_utils.gen.constants as constants
 from env_utils.gen.utils import game_util
 
 MAX_WEIGHT_IN_GRAPH = 1e5
