@@ -25,6 +25,7 @@ from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
 )
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.tensor import DTensor
 from torch.utils.data import DataLoader
 
 from torchtitan.config_manager import JobConfig, TORCH_DTYPE_MAP

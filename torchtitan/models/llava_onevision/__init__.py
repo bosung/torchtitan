@@ -28,7 +28,7 @@ register_train_spec(
         config=llava_onevision_configs,
         parallelize_fn=parallelize_llava,
         pipelining_fn=pipeline_llava,
-        build_optimizers_fn=build_optimizers,
+        build_optimizers_fn=build_llava_optimizers,
         build_lr_schedulers_fn=build_lr_schedulers,
     )
 )

@@ -29,7 +29,7 @@ __all__ = [
     "LRSchedulersContainer",
     "build_optimizers",
     "build_lr_schedulers",
-    "DTensorAwareOptimizersContainer"
+    "LMOnlyOptimizersContainer"
 ]
 
 
@@ -180,26 +180,34 @@ class OptimizersInBackwardContainer(OptimizersContainer):
         pass
 
 
-class DTensorAwareOptimizersContainer(OptimizersContainer):
+class LMOnlyOptimizersContainer(OptimizersContainer):
     def __init__(
         self, model_parts: List[nn.Module], optimizer_kwargs: Dict[str, Any], name: str
     ) -> None:
         all_params = []
         self.optimizers: List[Optimizer] = []
         self.model_parts = model_parts
+
+        exclusion_patterns = [
+            'vision_tower',
+            'multi_modal_projector',
+            'image_newline',
+            'language_model.model.embed_tokens'
+        ]
+
         for model in self.model_parts:
-            params = [p for p in model.parameters() if p.requires_grad and isinstance(p, DTensor)]
+            params = []
+            for n, p in model.named_parameters():
+                if p.requires_grad and not any(pattern in n for pattern in exclusion_patterns):
+                    params.append(p)
+
             self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
             all_params.extend(params)
 
-            params = [p for p in model.parameters() if p.requires_grad and not isinstance(p, DTensor)]
-            if len(params) > 0:
-                logger.info(f"DTensorAwareOptimizersContainer: {len(params)}")
-                self.optimizers.append(_create_optimizer(params, optimizer_kwargs, name))
-                all_params.extend(params)
         logger.info(f"optimizers {len(self.optimizers)} {self.optimizers[0]}")
 
         self._post_init(all_params, optimizer_kwargs)
+
 
 def build_optimizers(
     model_parts: List[nn.Module], job_config: JobConfig
@@ -280,7 +288,7 @@ def build_llava_optimizers(
         "foreach": not fused,
     }
 
-    return DTensorAwareOptimizersContainer(model_parts, optimizer_kwargs, name)
+    return LMOnlyOptimizersContainer(model_parts, optimizer_kwargs, name)
 
 
 class LRSchedulersContainer(Stateful):

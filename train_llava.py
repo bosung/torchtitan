@@ -60,33 +60,11 @@ def combine_model_parts_state(model_parts):
     return combined_state
 
 
-def save_model_checkpoint(model, step, output_dir):
+def save_model_checkpoint(model, optimizers, step, output_dir):
     if dist.get_rank() == 0:
         Path(output_dir).mkdir(exist_ok=True)
     
     dist.barrier()  # Ensure directory is created
-    
-    # Get model and optimizer states
-    if isinstance(model, list): # for PP -- model parts:
-        combined_state = combine_model_parts_state(model)
-        model_state = combined_state
-        pass
-    else:
-        model_state = model.state_dict()
-    
-    state_dict = {
-        "model": model_state,
-        "step": step
-    }
-    
-    storage_writer = dcp.FileSystemWriter(output_dir)
-    dcp.save(
-        state_dict=state_dict,
-        storage_writer=storage_writer,
-        planner=None  # Use default planner
-    )
-
-    dist.barrier()
     
     # Push checkpoints from local_rank 0
     if get_local_rank() == 0:
@@ -210,10 +188,6 @@ def main(job_config: JobConfig):
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
     )
 
-    # model_dtype = torch.bfloat16 -> woah!@ !!
-    # mainly bc of huggingfaces class related to past_key_values and DynamicCache()
-    # model_dtype = torch.float16 # need to do torch.autocast with lm_head -> this leads nan loss in DDP eventually
-
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name)
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
@@ -262,8 +236,6 @@ def main(job_config: JobConfig):
     else:
         init_device = device_type
         buffer_device = None
-
-    checkpoint_path = 'distributed_checkpoint/'
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
@@ -320,15 +292,16 @@ def main(job_config: JobConfig):
         train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
         model.to_empty(device=init_device)
         with torch.no_grad():
-            state_dict = {"model": model.state_dict()}
-            dcp.load(state_dict, checkpoint_id=checkpoint_path)
+            if job_config.checkpoint.create_seed_checkpoint:
+                checkpoint_path = 'distributed_checkpoint/'
+                state_dict = {"model": model.state_dict()}
+                dcp.load(state_dict, checkpoint_id=checkpoint_path)
             # Restore buffers
             for name, buffer in buffers_dict.items():
                 set_nested_attr(model, name, buffer.to(device_type))
-        #model.to(model_dtype)
         model.train()
         model_parts = [model]
-    
+
     device_mem_stats = device_memory_monitor.get_peak_stats()
     logger.info(
         f"{device_type.upper()} memory usage for model: "
@@ -339,7 +312,7 @@ def main(job_config: JobConfig):
     # build optimizer after applying parallelisms to the model
     optimizers = train_spec.build_optimizers_fn(model_parts, job_config)
     lr_schedulers = train_spec.build_lr_schedulers_fn(optimizers, job_config)
-
+    
     train_state = TrainState()
 
     # load initial checkpoint
@@ -451,7 +424,7 @@ def main(job_config: JobConfig):
             )
             position_ids = position_ids.unsqueeze(0)
             position_ids = position_ids.expand(input_ids.shape[0], position_ids.shape[1])
-            del input_ids, pixel_values, n_image
+            del pixel_values, n_image
             
             # since nn.Embedding is not sharded bc of mask_scatter for pixel_values, manually shard here.
             # if not (parallel_dims.cp_enabled and (parallel_dims.pp_enabled and has_first_stage)):
@@ -469,9 +442,9 @@ def main(job_config: JobConfig):
             optional_context_parallel_ctx = (
                 utils.create_context_parallel_ctx(
                     cp_mesh=world_mesh["cp"],
-                    cp_buffers=[inputs_embeds, labels, position_ids],
-                    cp_seq_dims=[1, 1, 1],
-                    cp_no_restore_buffers={inputs_embeds, labels, position_ids},
+                    cp_buffers=[input_ids, inputs_embeds, labels, position_ids],
+                    cp_seq_dims=[1, 1, 1, 1],
+                    cp_no_restore_buffers={input_ids, inputs_embeds, labels, position_ids},
                     cp_rotate_method=job_config.experimental.context_parallel_rotate_method,
                 )
                 if parallel_dims.cp_enabled
@@ -507,6 +480,11 @@ def main(job_config: JobConfig):
                     logits = model.language_model(inputs_embeds=inputs_embeds,
                     position_ids=position_ids,
                     use_cache=False)
+
+                    # hack for CP
+                    if (labels + torch.tensor([100], device=labels.device)).sum() == 0:
+                        labels[:, -2] = input_ids[:, -1]
+
                     loss = loss_fn(logits, labels)
                     logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
@@ -607,10 +585,11 @@ def main(job_config: JobConfig):
                 # dcp.save(model.state_dict(), checkpoint_id=output_dir)
                 save_model_checkpoint(
                     model=model_parts,
+                    optimizers=optimizers,
                     step=train_state.step,
                     output_dir=output_dir
                 )
-
+                
             # signal the profiler that the next profiling step has started
             if torch_profiler:
                 torch_profiler.step()
