@@ -130,9 +130,9 @@ class ALFREDDataset(IterableDataset, Stateful):
 
                 for ci, chunk in enumerate(chunks):
                     n_img_token = chunk['lang_input'].count('<image>')
-                    # # dict_keys(['input_ids', 'attention_mask', 'pixel_values', 'image_sizes'])
-                    if len(chunk['img_list']) == 0:
-                        logger.warning(f"len(chunk['img_list']) == 0, chunk['lang_input']: {chunk['lang_input']}")
+                    n_act_token = chunk['lang_input'].count('<|act|>')
+                    if n_act_token == 0:
+                        logger.warning(f"Skip this chunk - no target labels (action tokens)")
                         continue
                     if len(chunk['img_list']) != n_img_token:
                         logger.warning(f"Some images are missed -- expected {n_img_token}, but {len(chunk['img_list'])}")
@@ -148,9 +148,6 @@ class ALFREDDataset(IterableDataset, Stateful):
 
                     act_tok = False
                     for i, l in enumerate(labels[0]):
-                        if l == self.img_tok_id:
-                            continue
-
                         if (not act_tok) and l == self.act_tok_id: # 151648
                             act_tok = True
                             continue
