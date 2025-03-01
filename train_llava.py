@@ -60,17 +60,13 @@ def combine_model_parts_state(model_parts):
     return combined_state
 
 
-def save_model_checkpoint(model, optimizers, step, output_dir):
-    if dist.get_rank() == 0:
-        Path(output_dir).mkdir(exist_ok=True)
-    
-    dist.barrier()  # Ensure directory is created
+def save_checkpoint_s3(states, step, output_dir): # output_dir: outputs/checkpoints/step-xxxx
     
     # Push checkpoints from local_rank 0
     if get_local_rank() == 0:
         try:
             # Run aws s3 sync in background using nohup
-            sync_command = f"nohup aws s3 sync {output_dir} {AWS_S3_PATH}/ckpt_{step} > /tmp/s3_sync_{step}.log 2>&1 &"
+            sync_command = f"nohup aws s3 sync {output_dir} {AWS_S3_PATH}/step-{step} > /tmp/s3_sync_{step}.log 2>&1 &"
             subprocess.Popen(
                 sync_command,
                 shell=True,
@@ -237,70 +233,20 @@ def main(job_config: JobConfig):
         init_device = device_type
         buffer_device = None
 
-    # apply parallelisms and initialization
-    if parallel_dims.pp_enabled:
-        # Convert a torch.nn.ModuleList to a torch.nn.ModuleDict
-        layer_module_dict = torch.nn.ModuleDict({str(i): module for i, module in enumerate(model.language_model.model.layers)})
-        model.language_model.model.layers = layer_module_dict
-        del layer_module_dict
 
-        # apply PT-D Pipeline Parallel
-        (
-            pp_schedule,
-            model_parts,
-            has_first_stage,
-            has_last_stage,
-        ) = train_spec.pipelining_fn(
-            model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
-        )
-        # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
-        del model
-
-        # Since TP shards input_embeds, position_ids is not algined based on its position
-        # set postion_ids as buffer so that not to pass in forward (only works for training)
-        position_ids = torch.arange(0, job_config.training.seq_len).unsqueeze(0)
-
-        # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
-        # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
-        # optimizer, and checkpointing
-        for idx, m in enumerate(model_parts):
-            # apply SPMD-style PT-D techniques
-            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
-            m.to_empty(device=init_device)
-            # with torch.no_grad():
-            #     m.init_weights(buffer_device=buffer_device)
-            state_dict = {"model": m.state_dict()}
-            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
-
-            # Restore buffers
-            # if idx == 0:
-            #logger.info(f"{buffers_dict.keys()}") # every buffer's size is very small
-            for name, buffer in buffers_dict.items():
-                #if idx == 0:
-                #    logger.info(f"{name}, {type(buffer)}, {buffer.shape}")
-                # TODO model is LlavaOnevisionForConditionalGeneration here
-                #set_nested_attr(m, name, buffer.to(device_type))
-                setattr(m, name, buffer.to(device_type))
-
-            if hasattr(m, "language_model"):
-                setattr(m.language_model.model, 'position_ids', position_ids.to(device_type))
-
-            #m.to(model_dtype)
-            m.train()
-    else:
-        # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
-        model.to_empty(device=init_device)
-        with torch.no_grad():
-            if job_config.checkpoint.create_seed_checkpoint:
-                checkpoint_path = 'distributed_checkpoint/'
-                state_dict = {"model": model.state_dict()}
-                dcp.load(state_dict, checkpoint_id=checkpoint_path)
-            # Restore buffers
-            for name, buffer in buffers_dict.items():
-                set_nested_attr(model, name, buffer.to(device_type))
-        model.train()
-        model_parts = [model]
+    # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
+    train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
+    model.to_empty(device=init_device)
+    with torch.no_grad():
+        if job_config.checkpoint.create_seed_checkpoint:
+            checkpoint_path = 'distributed_checkpoint/'
+            state_dict = {"model": model.state_dict()}
+            dcp.load(state_dict, checkpoint_id=checkpoint_path)
+        # Restore buffers
+        # for name, buffer in buffers_dict.items():
+        #     set_nested_attr(model, name, buffer.to(device_type))
+    model.train()
+    model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
     logger.info(
@@ -337,6 +283,12 @@ def main(job_config: JobConfig):
         return
 
     checkpoint.load(step=job_config.checkpoint.load_step)
+
+    # TODO: where is the best place to put buffer loading
+    # Restore buffers after loading checkpoint
+    for name, buffer in buffers_dict.items():
+        set_nested_attr(model, name, buffer.to(device_type))
+
     metric_logger = build_metric_logger(job_config, parallel_dims)
 
     # plot losses loaded from checkpoint (if any) to TensorBoard
@@ -581,11 +533,10 @@ def main(job_config: JobConfig):
             )
 
             if (train_state.step % job_config.checkpoint.interval) == 0:
-                output_dir = f"./outputs/ckpt-{train_state.step}"
+                output_dir = checkpoint._create_checkpoint_id(step=train_state.step)
                 # dcp.save(model.state_dict(), checkpoint_id=output_dir)
-                save_model_checkpoint(
-                    model=model_parts,
-                    optimizers=optimizers,
+                save_checkpoint_s3(
+                    states=checkpoint.states,
                     step=train_state.step,
                     output_dir=output_dir
                 )
