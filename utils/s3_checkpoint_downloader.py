@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import boto3
 import os
 import re
@@ -10,6 +9,7 @@ from botocore.exceptions import ClientError
 from transformers import LlavaOnevisionForConditionalGeneration
 import torch.distributed.checkpoint as dcp
 
+from torchtitan.logging import logger
 
 def strip_s3_protocol(s3_path):
     """
