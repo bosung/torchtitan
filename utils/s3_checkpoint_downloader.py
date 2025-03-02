@@ -111,7 +111,7 @@ def get_latest_checkpoint(s3_path, local_base_dir, default_dir):
             return default_dir
         
         # Pattern to match checkpoint directories with step numbers (e.g., step-10000/)
-        step_pattern = re.compile(r'.*step(\d+)/?$')
+        step_pattern = re.compile(r'.*step-(\d+)/?$')
         
         # Filter directories that match the checkpoint pattern and extract step numbers
         checkpoint_dirs = []
