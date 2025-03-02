@@ -4,6 +4,7 @@ import re
 import argparse
 import sys
 import time
+import subprocess
 from botocore.exceptions import ClientError
 
 from transformers import LlavaOnevisionForConditionalGeneration
