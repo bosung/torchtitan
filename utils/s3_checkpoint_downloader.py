@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 from transformers import LlavaOnevisionForConditionalGeneration
 import torch.distributed.checkpoint as dcp
 
-from torchtitan.logging import logger
+from torchtitan.logging import init_logger, logger
 
 def strip_s3_protocol(s3_path):
     """
@@ -151,6 +151,7 @@ def get_latest_checkpoint(s3_path, local_base_dir, default_dir):
         return default_dir
 
 if __name__ == "__main__":
+    init_logger()
     parser = argparse.ArgumentParser(description='Download latest step-based checkpoint from S3 to local directory.')
     parser.add_argument('--path', required=True, help='S3 path to check (can include s3:// prefix)')
     parser.add_argument('--local-dir', required=True, help='Local directory to download checkpoints to')
