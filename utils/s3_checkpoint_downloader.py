@@ -178,12 +178,11 @@ if __name__ == "__main__":
             CONFIG_FILE = os.environ['CONFIG_FILE']
             command = f"torchrun --nproc_per_node 1 train_llava.py --job.config_file {CONFIG_FILE} --checkpoint.create_seed_checkpoint --experimental.context_parallel_degree 1"
             logger.info("Making a seed checkpoint ...")
-            subprocess.Popen(
+            subprocess.run(
                 command,
                 shell=True,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
+                stderr=subprocess.DEVNULL
             )
             logger.info(f"Done with creating seed checkpoint !")
         except Exception as e:
