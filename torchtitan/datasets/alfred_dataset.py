@@ -110,25 +110,39 @@ class ALFREDDataset(IterableDataset, Stateful):
         self.img_data_dir = img_data_dir
         self.traj_data = []
 
+        # Variables for checkpointing
+        self._sample_idx = 0
+        self._chunk_idx = 0
+
         if len(self.traj_data) == 0:
             self._load_traj_data()
 
     def __len__(self):
         return len(self.traj_data)
 
+    def _get_data_iter(self):
+        if self._sample_idx == len(self.traj_data):
+            self._sample_idx = 0
+            self._chunk_idx = 0
+
+        it = iter(self.traj_data)
+        for _ in range(self._sample_idx):
+            next(it)
+        return it
+
     def __iter__(self):
-        for traj in self.traj_data:
+        for traj in self._get_data_iter():
             print(f"Loading a new example ... ")
 
             if self.eval:
-                yield json.loads(traj['text'])
+                yield json.loads(traj['text']) 
             else:
                 chunks = self._load_sample(traj, chunk=True)
 
                 if not isinstance(chunks, list):
                     chunks = [chunks]
 
-                for ci, chunk in enumerate(chunks):
+                for ci, chunk in enumerate(chunks[self._chunk_idx:]):
                     n_img_token = chunk['lang_input'].count('<image>')
                     n_act_token = chunk['lang_input'].count('<|act|>')
                     if n_act_token == 0:
@@ -167,13 +181,26 @@ class ALFREDDataset(IterableDataset, Stateful):
                     else:
                         input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)
                         labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)
-
+                    
+                    self._chunk_idx += 1
                     yield {
                         'input_ids': input_ids,
                         'pixel_values': output.pixel_values, 
                         'image_sizes': output.image_sizes,
                         'labels': labels
                     }
+                    
+                # reset chunk_idx
+                self._chunk_idx = 0
+            self._sample_idx += 1
+
+    def load_state_dict(self, state_dict):
+        logger.info(f"loading Dataloader state_dict ... : {state_dict}")
+        self._sample_idx = state_dict['sample_idx']
+        self._chunk_idx = state_dict['chunk_idx']
+
+    def state_dict(self):
+        return {"sample_idx": self._sample_idx, "chunk_idx": self._chunk_idx}
 
     def _load_sample(self, traj, chunk=True):
         # with S3

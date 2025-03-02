@@ -438,7 +438,7 @@ def main(job_config: JobConfig):
                         labels[:, -2] = input_ids[:, -1]
 
                     loss = loss_fn(logits, labels)
-                    logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
+                    #logger.info(f"step: {train_state.step:2} {color.yellow}{loss}{color.reset}")
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del logits
