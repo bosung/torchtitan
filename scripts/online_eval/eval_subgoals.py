@@ -7,6 +7,7 @@ from PIL import Image
 from datetime import datetime
 import time
 import random
+from collections import defaultdict
 #from .env.thor_env import ThorEnv
 #from eval.eval import Eval
 
@@ -191,7 +192,7 @@ class EvalSubgoals():
 
         scene_name = 'FloorPlan%d' % scene_num
         last_event = env.reset(scene_name)
-        #breakpoint()
+        
         # update objectName bc obj name are different from ai2thor versions
         objname_dict = {obj['name'].split("_")[0]: obj['name'] for obj in last_event.metadata['objects']}
         valid_object_poses = []
@@ -227,56 +228,23 @@ class EvalSubgoals():
         # setup task for reward
         env.set_task(traj, reward_type=reward_type)
 
-    """
-    @classmethod
-    def run(cls, model, processor, eval_dataloader, args, successes, failures, results):
-        '''
-        evaluation loop
-        '''
-        # start THOR
-        env = ThorEnv()
-
-        # make subgoals list
-        subgoals_to_evaluate = cls.ALL_SUBGOALS if args.subgoals.lower() == "all" else args.subgoals.split(',')
-        subgoals_to_evaluate = [sg for sg in subgoals_to_evaluate if sg in cls.ALL_SUBGOALS]
-
-        # create empty stats per subgoal
-        for sg in subgoals_to_evaluate:
-            successes[sg] = list()
-            failures[sg] = list()
-
-        #for i in range(0, len(eval_dataset)):
-        for batch in eval_dataloader:
-            task = batch['task'][0]
-            traj = batch['traj'][0]
-            r_idx = task['repeat_idx']
-            subgoal_idxs = [sg['high_idx'] for sg in traj['plan']['high_pddl'] if sg['discrete_action']['action'] in subgoals_to_evaluate]
-
-            #print(task)
-            for eval_idx in subgoal_idxs:
-                cls.evaluate(env, model, processor, eval_idx, r_idx, traj, args, successes, failures, results)
-
-        # stop THOR
-        env.stop()
-    """
-
     def simulate_with_expert(self, env, traj_data, processor, eval_idx, teacher_forcing=True, max_steps=2000):
         # expert demonstration to reach eval_idx-1
         #expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
-        expert_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
+        self.expert_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
+        gt_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] <= eval_idx]
+        self.gt_n_step = len(gt_init_actions)
 
         # subgoal info
-        r_idx = 0   # TODO remove turk_annotations's
         subgoal_action = traj_data['plan']['high_pddl'][eval_idx]['discrete_action']['action']
-        #subgoal_instr = traj_data['turk_annotations']['anns'][r_idx]['high_descs'][eval_idx]
-        #subgoal_instrs = traj_data['turk_annotations']['anns'][r_idx]['high_descs']
 
         # task goal info
+        r_idx = 0  # TODO remove turk_annotations's
         task_desc = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
 
         # print subgoal info
-        print(f"Evaluating: {traj_data['task_id']}\nTask desc: {task_desc}")
-        print(f"Subgoal[{eval_idx}] {subgoal_action}")
+        print(f" ======== Evaluating: {traj_data['task_id']}\nTask desc: {task_desc}")
+        print(f" ======== Subgoal[{eval_idx}] {subgoal_action}")
 
         # setup scene
         reward_type = 'dense'
@@ -284,50 +252,42 @@ class EvalSubgoals():
 
         done, subgoal_success = False, False
         t, fails, reward = 0, 0, 0
-        prev_subgoal_idx, curr_subgoal_idx = -1, 0
-        prev_high_idx = -1
         fail_from_len_limit = False
         
         # for model inputs
-        self.sequence, self.token_type_ids = [], []
         self.img_list = []
-
         self.prefix = ""
+
         main_goal_str = "Your main goal: "
         if 'turk_annotations' in traj_data:
             main_goal_str += traj_data['turk_annotations']['anns'][0]['task_desc']
         self.prefix = main_goal_str
+        
         self.t = 0
-
-        curr_high_idx = 0
+        prev_high_idx, curr_high_idx = -1, 0
         # Do expert action here:
-        for t, action in enumerate(expert_init_actions):
+        for t, action in enumerate(self.expert_init_actions):
             curr_high_idx = traj_data['plan']['low_actions'][t]['high_idx']
             if  curr_high_idx > prev_high_idx:
-                #self.sequence.append(subgoal_instrs[curr_high_idx])
                 self.prefix += f" Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][curr_high_idx])}"
-                #print(f"\t-----> New subgoal [{curr_high_idx}] is set: {subgoal_instrs[curr_high_idx]}")
-                #token_type_ids.append( 'lang' )
                 prev_high_idx = curr_high_idx
 
-                # add image for the last state?
+                # add image (new state) for the new plan
                 curr_image = Image.fromarray(np.uint8(env.last_event.frame))
                 self.img_list.append(curr_image)
                 self.prefix += "<image>"
 
             # execute expert action
-            #_action = action['action'].split("_")[0]
             if 'Object' in action['action']: # expert 
-                if 'PutObject' in action['action']:
-                    breakpoint()
+                if 'receptacleObjectId' in action:
+                    action['objectId'] = action['receptacleObjectId']
+                    del action['receptacleObjectId'] # migrate to ai2thor=5.0.0
                 last_event = env.step(action)
-
             else:
                 last_event, smooth_events = env.step(dict(action=action['action'], forceAction=True), smooth_nav=True)
 
             if not last_event.metadata['lastActionSuccess']:
                 logger.info("ERROR - expert initialization failed")
-                breakpoint()
                 return None, None, False
 
             act_str = serialize_action(action)
@@ -343,23 +303,16 @@ class EvalSubgoals():
                     _image = Image.fromarray(np.uint8(se.frame))
                     self.img_list.append(_image)
                     self.prefix += ' <image>'
+            
+            # update transition reward
+            _ = env.get_transition_reward()
 
         # Done with expert actions
         finished = env.get_subgoal_idx()
 
-        #assert finished == (eval_idx - 1)
-        # TODO here
-        #prev_high_idx = finished
-        
-        #self.sequence.append(subgoal_instrs[eval_idx])
-        #print(f"\t-----> New subgoal [{eval_idx}] is set: {subgoal_instrs[eval_idx]}")
-        #self.token_type_ids.append( 'lang' )
-        # TODO
-        if len(expert_init_actions) > 0:
+        if len(self.expert_init_actions) > 0:
             curr_high_idx += 1
 
-        if curr_high_idx != eval_idx:
-            breakpoint()
         assert curr_high_idx == eval_idx
         
         self.prefix += f" Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][curr_high_idx])}"
@@ -389,14 +342,13 @@ class EvalSubgoals():
                 elif obj_id:
                     last_event = env.step(dict(action=_action, objectId=obj_id))
             else:
-                last_event, smooth_events = env.step(dict(action=action, forceAction=true), smooth_nav=True)
+                last_event, smooth_events = env.step(dict(action=action, forceAction=True), smooth_nav=True)
 
             t_success = last_event.metadata['lastActionSuccess']
         except:
             t_success = False
 
         if not t_success:
-            breakpoint()
             logger.info(f"FAIL -- action: {env.last_event.metadata['lastAction']} error: {env.last_event.metadata['errorMessage']}")
             return False, False, None, None
 
@@ -414,12 +366,12 @@ class EvalSubgoals():
 
         # next time-step
         # t_done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
-        t_reward, t_done = env.get_transition_reward() # type: (float, bool)
+        t_reward, t_done, sg_done = env.get_transition_reward() # type: (float, bool)
         
         # debug
         # print(f"t: {t}, Expert: {traj_data['plan']['low_actions'][t]['api_action']['action']} | {traj_data['plan']['low_actions'][t]['api_action']}")
         #gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
-        logger.info(f"t: {self.t}, t_done: {t_done}, Pred: {action}, success: {t_success}, Finished: {env.get_subgoal_idx()}")
+        logger.info(f"t: {self.t}, t_done: {t_done}, sg_done: {sg_done} || Pred: {action}, success: {t_success}, Finished: {env.get_subgoal_idx()}")
 
         # update subgoals
         finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
@@ -428,6 +380,10 @@ class EvalSubgoals():
             subgoal_success = True
             return t_success, subgoal_success, self.prefix, self.img_list
             
+        if self.t > (self.gt_n_step * 3):
+            logger.info(f"fail due to the t limit -- t: {self.t} > {(self.gt_n_step * 3)} (limit)")
+            return False, False, None, None
+
         # increment time index
         self.t += 1
 
@@ -436,67 +392,66 @@ class EvalSubgoals():
         return t_success, t_done, self.prefix, self.img_list
         # ==========================================================
 
-    def metrics():
+    def metrics(self, traj_data, eval_idx, subgoal_success):
         # metrics
-        pl = float(t - len(expert_init_actions)) + 1 # +1 for last action
+        pl = float(self.t - len(self.expert_init_actions)) + 1 # +1 for last action
         expert_pl = len([ll for ll in traj_data['plan']['low_actions'] if ll['high_idx'] == eval_idx])
 
         s_spl = (1 if subgoal_success else 0) * min(1., expert_pl / (pl + sys.float_info.epsilon))
         plw_s_spl = s_spl * expert_pl
 
-        # log success/fails
-        #lock.acquire()
-
         # results
-        for sg in cls.ALL_SUBGOALS:
-            results[sg] = {
+        for sg in self.ALL_SUBGOALS:
+            self.results[sg] = {
                     'sr': 0.,
                     'successes': 0.,
                     'evals': 0.,
                     'sr_plw': 0.
             }
 
+        subgoal_action = traj_data['plan']['high_pddl'][eval_idx]['discrete_action']['action']
         log_entry = {'trial': traj_data['task_id'],
                      'type': traj_data['task_type'],
-                     'repeat_idx': int(r_idx),
                      'subgoal_idx': int(eval_idx),
                      'subgoal_type': subgoal_action,
-                     'subgoal_instr': subgoal_instr,
+                     #'subgoal_instr': subgoal_instr,
                      'subgoal_success_spl': float(s_spl),
                      'subgoal_path_len_weighted_success_spl': float(plw_s_spl),
-                     'subgoal_path_len_weight': float(expert_pl),
-                     'reward': float(reward)}
+                     'subgoal_path_len_weight': float(expert_pl),}
+                     #'reward': float(reward)}
         if subgoal_success:
-            sg_successes = successes[subgoal_action]
-            sg_successes.append(log_entry)
-            successes[subgoal_action] = sg_successes
+            # sg_successes = self.successes[subgoal_action]
+            # sg_successes.append(log_entry)
+            # self.successes[subgoal_action] = sg_successes
+            self.successes[subgoal_action].append(log_entry)
         else:
-            sg_failures = failures[subgoal_action]
-            sg_failures.append(log_entry)
-            failures[subgoal_action] = sg_failures
+            # sg_failures = self.failures[subgoal_action]
+            # sg_failures.append(log_entry)
+            # self.failures[subgoal_action] = sg_failures
+            self.failures[subgoal_action].append(log_entry)
 
         # save results
         print("-------------")
-        subgoals_to_evaluate = list(successes.keys())
+        subgoals_to_evaluate = list(self.successes.keys())
         subgoals_to_evaluate.sort()
         total_num_eval = 0
         total_num_success = 0
-        if fail_from_len_limit:
-            results['fail_of_len_limit'] += 1
+        # if fail_from_len_limit:
+        #     results['fail_of_len_limit'] += 1
 
         for sg in subgoals_to_evaluate:
-            num_successes, num_failures = len(successes[sg]), len(failures[sg])
-            num_evals = len(successes[sg]) + len(failures[sg])
+            num_successes, num_failures = len(self.successes[sg]), len(self.failures[sg])
+            num_evals = len(self.successes[sg]) + len(self.failures[sg])
             total_num_eval += num_evals
             total_num_success += num_successes
             if num_evals > 0:
                 sr = float(num_successes) / num_evals
-                total_path_len_weight = sum([entry['subgoal_path_len_weight'] for entry in successes[sg]]) + \
-                                        sum([entry['subgoal_path_len_weight'] for entry in failures[sg]])
-                sr_plw = float(sum([entry['subgoal_path_len_weighted_success_spl'] for entry in successes[sg]]) +
-                                    sum([entry['subgoal_path_len_weighted_success_spl'] for entry in failures[sg]])) / total_path_len_weight
+                total_path_len_weight = sum([entry['subgoal_path_len_weight'] for entry in self.successes[sg]]) + \
+                                        sum([entry['subgoal_path_len_weight'] for entry in self.failures[sg]])
+                sr_plw = float(sum([entry['subgoal_path_len_weighted_success_spl'] for entry in self.successes[sg]]) +
+                                    sum([entry['subgoal_path_len_weighted_success_spl'] for entry in self.failures[sg]])) / total_path_len_weight
 
-                results[sg] = {
+                self.results[sg] = {
                     'sr': sr,
                     'successes': num_successes,
                     'evals': num_evals,
@@ -510,7 +465,7 @@ class EvalSubgoals():
         print("%s ==========" % sg)
         print(f"total # evals: {total_num_eval}")
         if total_num_eval > 0:
-            print(f"Failure due to length limit: {results['fail_of_len_limit']}/{total_num_eval}")
+            #print(f"Failure due to length limit: {results['fail_of_len_limit']}/{total_num_eval}")
             print(f"total: ({total_num_success/total_num_eval}) {total_num_success}/{total_num_eval}")
             
         print("------------")
@@ -522,7 +477,7 @@ class EvalSubgoals():
         '''
         # self.successes, self.failures = self.manager.dict(), self.manager.dict()
         # self.results = self.manager.dict()
-        self.successes, self.failures = {}, {}
+        self.successes, self.failures = defaultdict(list), defaultdict(list)
         self.results = {"fail_of_len_limit": 0,}
 
     def save_results(self):

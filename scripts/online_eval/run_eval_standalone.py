@@ -162,9 +162,7 @@ def main(
         # eval_subgoals.setup_scene(env, traj)
         subgoal_idxs = eval_subgoals.get_subgoal_idx(traj)
         
-        for eval_idx in subgoal_idxs:
-            max_trial = 3
-
+        for eval_idx in subgoal_idxs[1:]:
             # context: text and image list
             context, img_list, sim_success = eval_subgoals.simulate_with_expert(env, traj, processor, eval_idx)
             if not sim_success:
@@ -173,15 +171,9 @@ def main(
             batch = processor(images=img_list, text=context, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
             logger.info(f"Input shape: {batch.input_ids.shape}")
             
-            # # break if max_steps reached ?
             done = False
 
-            #t = eval_subgoals.time_step()
             while not done:
-                # break if max_steps reached
-                # if t >= max_steps + len(expert_init_actions):
-                #     break
-
                 #if rank == 0:
                 # broadcast batch
                 generated_tokens = generate(model, batch, device, cp_degree, act_tok_id, pad_tok_id)
@@ -191,13 +183,15 @@ def main(
                 output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
                 logger.info(f"{color.blue}{output_text}\n{color.reset}")
                 success, done, context, img_list = eval_subgoals.interact_with_env(env, output_text, eval_idx)
-                
                 # TODO broadcast success
 
                 if (not success) or done:
                     break
-
+                    
                 batch = processor(images=img_list, text=context, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
+
+            # do smth for metrics
+            eval_subgoals.metrics(traj, eval_idx, done)
 
     env.stop()
 

@@ -124,7 +124,7 @@ class BaseTask(object):
         # step and check if max_episode_length reached
         self.step_num += 1
         done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
-        return reward, done
+        return reward, done, sg_done
 
     def reset(self):
         '''
@@ -433,7 +433,7 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
     def goal_conditions_met(self, state):
         ts = 3
         s = 0
-
+        
         targets = self.get_targets()
         receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
         pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
