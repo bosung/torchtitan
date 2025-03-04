@@ -943,10 +943,11 @@ class Qwen2Model(Qwen2PreTrainedModel):
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
-
-        if position_ids is None:
-            #position_ids = cache_position.unsqueeze(0)
+        
+        if position_ids is None and hasattr(self, "position_ids"):
             position_ids = self.position_ids.expand(inputs_embeds.shape[0], self.position_ids.shape[1])
+        elif position_ids is None:
+            position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions

@@ -18,6 +18,73 @@ from torch.cuda.amp import autocast
 
 import torch.distributed as dist
 
+from torchtitan.logging import logger
+
+
+def visible(obj_list):
+    return [obj for obj in obj_list if obj['visible']]
+
+def find_visible_and_property(env, objname, property_name):
+    for obj in env.last_event.metadata['objects']:
+        if objname.lower() in obj['name'].lower() and obj['visible'] and obj[property_name]:
+            print(obj['name'], obj['objectId'])
+            return obj['objectId']
+    return None
+
+def visible_and_pickupable(env, objname):
+    return find_visible_and_property(env, objname, 'pickupable')
+
+def visible_and_receptacle(env, objname):
+    return find_visible_and_property(env, objname, 'receptacle')
+
+def visible_and_openable(env, objname):
+    return find_visible_and_property(env, objname, 'openable')
+
+def visible_and_sliceable(env, objname):
+    return find_visible_and_property(env, objname, 'sliceable')
+
+def visible_and_toggleable(env, objname):
+    return find_visible_and_property(env, objname, 'toggleable')
+
+def visible_and_isOpen(env, objname): # closeable
+    return find_visible_and_property(env, objname, 'isOpen')
+
+
+def action_with_gt(action, env):
+    pass
+
+
+def post_processing_action(action, env, objname=None):
+    actions_map = {
+        "OpenObject": visible_and_openable,
+        "CloseObject": visible_and_isOpen,
+        "PickupObject": visible_and_pickupable,
+        "PutObject": visible_and_receptacle,
+        "ToggleObjectOn": visible_and_toggleable,
+        "ToggleObjectOff": visible_and_toggleable,
+        "SliceObject": visible_and_sliceable,
+    }
+    
+    try: 
+        if action.startswith('PutObject'):
+            receptacle_obj = action.split()[-1].strip()
+            return "PutObject", visible_and_receptacle(env, receptacle_obj)
+        elif action.startswith('ToggleObject'):
+            objname = action.split()[-1].strip()
+            return "ToggleObject", visible_and_toggleable(env, objname)
+
+        for action_prefix, func in actions_map.items():
+            if action.startswith('PutObject'):
+                receptacle_obj = action.split()[-1].strip()
+                return action_prefix, func(env, receptacle_obj)
+            elif action.startswith(action_prefix):
+                objname = action.split(action_prefix)[-1].strip()
+                return action_prefix, func(env, objname)
+    except: # action parsing error
+        return None, None
+    
+    return None, None
+
 
 ACT_TEMPLATE = {
     "RotateLeft": "RotateLeft",
@@ -46,6 +113,43 @@ def serialize_action(act):
         template = template.replace("[receptacle]", act['receptacleObjectId'].split("|")[0])
     return template
 
+def get_templated_high_pddl_desc(high_pddl):
+    a_type = high_pddl['discrete_action']['action']
+    args = high_pddl['discrete_action']['args'] if 'args' in high_pddl['discrete_action'] else None
+
+    if 'objectId' in high_pddl['planner_action']:
+        objectId = high_pddl['planner_action']['objectId']
+        obj_name = objectId.split("|")[0]
+    if 'receptacleObjectId' in high_pddl['planner_action']:
+        receptacleObjectId = high_pddl['planner_action']['receptacleObjectId']
+        recep_name = receptacleObjectId.split("|")[0]
+
+    templated_str = ""
+
+    if 'GotoLocation' in a_type:
+        templated_str = f"go to the {args[0]}"
+    elif 'OpenObject' in a_type:
+        templated_str = f"open the {obj_name}"
+    elif 'CloseObject' in a_type:
+        templated_str = f"close the {obj_name}"
+    elif 'PickupObject' in a_type:
+        templated_str = f"pick up the {obj_name}"
+    elif 'PutObject' in a_type:
+        templated_str = f"put the {obj_name} in the {recep_name}"
+    elif 'CleanObject' in a_type:
+        templated_str = f"wash the {obj_name}"
+    elif 'HeatObject' in a_type:
+        templated_str = f"heat the {obj_name}"
+    elif 'CoolObject' in a_type:
+        templated_str = f"cool the {obj_name}"
+    elif 'ToggleObject' in a_type:
+        templated_str = f"toggle {obj_name}"
+    elif 'SliceObject' in a_type:
+        templated_str = f"slice the {obj_name}"
+    elif 'End' in a_type:
+        templated_str = "<<STOP>>"
+
+    return templated_str
 
 class EvalSubgoals():
     '''
@@ -87,14 +191,15 @@ class EvalSubgoals():
 
         scene_name = 'FloorPlan%d' % scene_num
         last_event = env.reset(scene_name)
-
+        #breakpoint()
         # update objectName bc obj name are different from ai2thor versions
         objname_dict = {obj['name'].split("_")[0]: obj['name'] for obj in last_event.metadata['objects']}
         valid_object_poses = []
         for obj_pose in object_poses:
             name = obj_pose['objectName'].split("_")[0]
-            if name in objname_dict and objname_dict[name] != obj_pose['objectName']:
-                obj_pose.update({"objectName": objname_dict[name]})
+            if name in objname_dict:
+                if objname_dict[name] != obj_pose['objectName']:
+                    obj_pose.update({"objectName": objname_dict[name]})
                 valid_object_poses.append(obj_pose)
         
         last_event = env.restore_scene(valid_object_poses, object_toggles, dirty_and_empty)
@@ -156,27 +261,26 @@ class EvalSubgoals():
     """
 
     def simulate_with_expert(self, env, traj_data, processor, eval_idx, teacher_forcing=True, max_steps=2000):
-        
-        # setup scene
-        # TODO
-        reward_type = 'dense'
-        self.setup_scene(env, traj_data, reward_type=reward_type)
-        
         # expert demonstration to reach eval_idx-1
-        expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
+        #expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
+        expert_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
 
         # subgoal info
-        r_idx = 0
+        r_idx = 0   # TODO remove turk_annotations's
         subgoal_action = traj_data['plan']['high_pddl'][eval_idx]['discrete_action']['action']
-        subgoal_instr = traj_data['turk_annotations']['anns'][r_idx]['high_descs'][eval_idx]
-        subgoal_instrs = traj_data['turk_annotations']['anns'][r_idx]['high_descs']
+        #subgoal_instr = traj_data['turk_annotations']['anns'][r_idx]['high_descs'][eval_idx]
+        #subgoal_instrs = traj_data['turk_annotations']['anns'][r_idx]['high_descs']
 
         # task goal info
         task_desc = traj_data['turk_annotations']['anns'][r_idx]['task_desc']
 
         # print subgoal info
         print(f"Evaluating: {traj_data['task_id']}\nTask desc: {task_desc}")
-        print(f"Subgoal[{eval_idx}] {subgoal_action} || Instruction: {subgoal_instr}")
+        print(f"Subgoal[{eval_idx}] {subgoal_action}")
+
+        # setup scene
+        reward_type = 'dense'
+        self.setup_scene(env, traj_data, reward_type=reward_type)
 
         done, subgoal_success = False, False
         t, fails, reward = 0, 0, 0
@@ -188,124 +292,149 @@ class EvalSubgoals():
         self.sequence, self.token_type_ids = [], []
         self.img_list = []
 
-        prefix = ""
+        self.prefix = ""
         main_goal_str = "Your main goal: "
         if 'turk_annotations' in traj_data:
             main_goal_str += traj_data['turk_annotations']['anns'][0]['task_desc']
-        prefix = main_goal_str
+        self.prefix = main_goal_str
+        self.t = 0
 
+        curr_high_idx = 0
         # Do expert action here:
         for t, action in enumerate(expert_init_actions):
             curr_high_idx = traj_data['plan']['low_actions'][t]['high_idx']
             if  curr_high_idx > prev_high_idx:
-                sequence.append(subgoal_instrs[curr_high_idx])
-                print(f"\t-----> New subgoal [{curr_high_idx}] is set: {subgoal_instrs[curr_high_idx]}")
-                token_type_ids.append( 'lang' )
+                #self.sequence.append(subgoal_instrs[curr_high_idx])
+                self.prefix += f" Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][curr_high_idx])}"
+                #print(f"\t-----> New subgoal [{curr_high_idx}] is set: {subgoal_instrs[curr_high_idx]}")
+                #token_type_ids.append( 'lang' )
                 prev_high_idx = curr_high_idx
 
-            # (2) add image
-            # extract visual feats
-            curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-        
-            sequence.append(curr_image)
-            token_type_ids.append('img')
-            self.img_list.append(curr_image)
-            prefix += "<image>"
+                # add image for the last state?
+                curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+                self.img_list.append(curr_image)
+                self.prefix += "<image>"
 
-            # compressed_mask = action['args']['mask'] if 'mask' in action['args'] else None
-            # mask = env.decompress_mask(compressed_mask) if compressed_mask is not None else None
-            
-            act_str = serialize_action(action)
-            sequence.append(act_str)
-            token_type_ids.append('action')
-            prefix += act_str
-
-            breakpoint()
             # execute expert action
-            last_event = env.step(action['action'], smooth_nav=args.smooth_nav, debug=args.debug)
+            #_action = action['action'].split("_")[0]
+            if 'Object' in action['action']: # expert 
+                if 'PutObject' in action['action']:
+                    breakpoint()
+                last_event = env.step(action)
+
+            else:
+                last_event, smooth_events = env.step(dict(action=action['action'], forceAction=True), smooth_nav=True)
+
             if not last_event.metadata['lastActionSuccess']:
-                raise ValueError("expert initialization failed")
+                logger.info("ERROR - expert initialization failed")
+                breakpoint()
+                return None, None, False
+
+            act_str = serialize_action(action)
+            self.prefix += '<|act|>' + act_str + '<|act|>'
+            self.t += 1
+
+            if 'Object' in action['action']:
+                _image = Image.fromarray(np.uint8(env.last_event.frame))
+                self.img_list.append(_image)
+                self.prefix += "<image>"
+            else:
+                for se in smooth_events:
+                    _image = Image.fromarray(np.uint8(se.frame))
+                    self.img_list.append(_image)
+                    self.prefix += ' <image>'
 
         # Done with expert actions
         finished = env.get_subgoal_idx()
 
         #assert finished == (eval_idx - 1)
-        prev_high_idx = finished
-        curr_high_idx = eval_idx
-
-        self.sequence.append(subgoal_instrs[eval_idx])
-        print(f"\t-----> New subgoal [{eval_idx}] is set: {subgoal_instrs[eval_idx]}")
-        self.token_type_ids.append( 'lang' )
-
-        # (2) add image
-        curr_image = Image.fromarray(np.uint8(env.last_event.frame))
-
-        self.sequence.append(curr_image)
-        self.token_type_ids.append('img')
-        self.img_list.append(curr_image)
-        prefix += "<image>"
+        # TODO here
+        #prev_high_idx = finished
         
-        prompt = prefix + "<|act|>"
+        #self.sequence.append(subgoal_instrs[eval_idx])
+        #print(f"\t-----> New subgoal [{eval_idx}] is set: {subgoal_instrs[eval_idx]}")
+        #self.token_type_ids.append( 'lang' )
+        # TODO
+        if len(expert_init_actions) > 0:
+            curr_high_idx += 1
 
-        return prompt, self.img_list
+        if curr_high_idx != eval_idx:
+            breakpoint()
+        assert curr_high_idx == eval_idx
+        
+        self.prefix += f" Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][curr_high_idx])}"
 
-    def interact_with_env(cls, env, action):
-        prev_act = action
+        curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+        self.img_list.append(curr_image)
+        self.prefix += "<image>"
+        
+        prompt = self.prefix + "<|act|>"
+        
+        return prompt, self.img_list, True
 
-        sequence.append(action)
-        token_type_ids.append('action')
-
+    def interact_with_env(self, env, action, eval_idx):
+        smooth_events = None
         try:
             # convert act to api_action
-            if 'object' in action:
-                obj_id = post_processing_action(action, env)
-                if obj_id:
-                    event, action = env.to_thor_api_exec(action, obj_id)
-                    t_success = True if event.metadata['lastActionSuccess'] else False
-                    #print(f't: {t}, t_success: {t_success}, action: {action}')
-                else:
-                    t_success = False
-            elif action not in cls.TERMINAL_TOKENS:
-                # use predicted action and mask (if provided) to interact with the env
-                mask = None
-                t_success, _, _, err, _ = env.va_interact(action, interact_mask=mask, smooth_nav=False, debug=False)
-                # output:
-                # t_success (bool), <ai2thor.server.Event object at 0x702d0a99d9e8>, "", "", {'action': 'MoveAhead', 'forceAction': True}
+            if 'Object' in action:
+                _action, obj_id = post_processing_action(action, env)
+                if 'PutObject' in action and obj_id:
+                    inventory_object_id = env.last_event.metadata['inventoryObjects'][0]['objectId']
+                    put_action = dict(action="PutObject",
+                                objectId=inventory_object_id,
+                                receptacleObjectId=obj_id,
+                                forceAction=True,
+                                placeStationary=True)
+                    last_event = env.step(put_action)
+                elif obj_id:
+                    last_event = env.step(dict(action=_action, objectId=obj_id))
+            else:
+                last_event, smooth_events = env.step(dict(action=action, forceAction=true), smooth_nav=True)
+
+            t_success = last_event.metadata['lastActionSuccess']
         except:
             t_success = False
 
         if not t_success:
-            fails += 1
-            if fails >= args.max_fails:
-                print("Interact API failed %d times" % (fails) + "; latest error '%s'" % err)
-                return False
+            breakpoint()
+            logger.info(f"FAIL -- action: {env.last_event.metadata['lastAction']} error: {env.last_event.metadata['errorMessage']}")
+            return False, False, None, None
+
+        self.prefix += '<|act|>' + action + '<|act|>'
+
+        if smooth_events:
+            for se in smooth_events:
+                self.prefix += ' <image>'
+                _image = Image.fromarray(np.uint8(se.frame))
+                self.img_list.append(_image)
+        else:
+            self.prefix += ' <image>'
+            _image = Image.fromarray(np.uint8(last_event.frame))
+            self.img_list.append(_image)
 
         # next time-step
+        # t_done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
         t_reward, t_done = env.get_transition_reward() # type: (float, bool)
-        reward += t_reward
-
+        
         # debug
         # print(f"t: {t}, Expert: {traj_data['plan']['low_actions'][t]['api_action']['action']} | {traj_data['plan']['low_actions'][t]['api_action']}")
-        gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
-        print(f"t: {t}, Pred: {action} (GT: {gt_action}), success: {t_success}, Finished: {env.get_subgoal_idx()}")
+        #gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
+        logger.info(f"t: {self.t}, t_done: {t_done}, Pred: {action}, success: {t_success}, Finished: {env.get_subgoal_idx()}")
 
         # update subgoals
         finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
         # curr_subgoal_idx = finished + 1
         if finished == eval_idx:
             subgoal_success = True
-            return False
+            return t_success, subgoal_success, self.prefix, self.img_list
             
-        # terminal tokens predicted
-        if action in cls.TERMINAL_TOKENS:
-            print("predicted %s" % action)
-            return False
-
         # increment time index
-        t += 1
+        self.t += 1
 
-        return True
-        # ===============================================
+        self.prefix += '<|act|>'
+
+        return t_success, t_done, self.prefix, self.img_list
+        # ==========================================================
 
     def metrics():
         # metrics

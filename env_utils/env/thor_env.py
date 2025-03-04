@@ -131,17 +131,18 @@ class ThorEnv(Controller):
         task_type = traj['task_type']
         self.task = get_task(task_type, traj, self, reward_type=reward_type, max_episode_length=max_episode_length)
 
-    def step(self, action, smooth_nav=False):
+    def step(self, action, smooth_nav=False, quality=None, raise_for_failure=False):
         '''
         overrides ai2thor.controller.Controller.step() for smooth navigation and goal_condition updates
         '''
         if smooth_nav:
+            smooth_events = None
             if "MoveAhead" in action['action']:
-                self.smooth_move_ahead(action)
+                smooth_events = self.smooth_move_ahead(action)
             elif "Rotate" in action['action']:
-                self.smooth_rotate(action)
+                smooth_events = self.smooth_rotate(action)
             elif "Look" in action['action']:
-                self.smooth_look(action)
+                smooth_events = self.smooth_look(action)
             else:
                 super().step(action)
         else:
@@ -150,11 +151,15 @@ class ThorEnv(Controller):
                 self.look_angle(-constants.AGENT_HORIZON_ADJ)
             elif "LookDown" in action:
                 self.look_angle(constants.AGENT_HORIZON_ADJ)
+            elif "ChangeQuality" in action:
+                super().step(action, quality=quality)
             else:
                 super().step(action)
 
         event = self.update_states(action)
         self.check_post_conditions(action)
+        if smooth_nav:
+            return event, smooth_events
         return event
 
     def check_post_conditions(self, action):
@@ -231,10 +236,10 @@ class ThorEnv(Controller):
         new_action = copy.deepcopy(action)
         new_action['moveMagnitude'] = constants.AGENT_STEP_SIZE / smoothing_factor
 
-        new_action['renderImage'] = render_settings['renderImage']
-        new_action['renderClassImage'] = render_settings['renderClassImage']
-        new_action['renderObjectImage'] = render_settings['renderObjectImage']
-        new_action['renderDepthImage'] = render_settings['renderDepthImage']
+        # new_action['renderImage'] = render_settings['renderImage']
+        # new_action['renderClassImage'] = render_settings['renderClassImage']
+        # new_action['renderObjectImage'] = render_settings['renderObjectImage']
+        # new_action['renderDepthImage'] = render_settings['renderDepthImage']
 
         events = []
         for xx in range(smoothing_factor - 1):
@@ -273,12 +278,13 @@ class ThorEnv(Controller):
                     'z': position['z'],
                     'y': position['y'],
                     'horizon': horizon,
-                    'tempRenderChange': True,
-                    'renderNormalsImage': False,
-                    'renderImage': render_settings['renderImage'],
-                    'renderClassImage': render_settings['renderClassImage'],
-                    'renderObjectImage': render_settings['renderObjectImage'],
-                    'renderDepthImage': render_settings['renderDepthImage'],
+                    'standing': True
+                    # 'tempRenderChange': True,
+                    # 'renderNormalsImage': False,
+                    # 'renderImage': render_settings['renderImage'],
+                    # 'renderClassImage': render_settings['renderClassImage'],
+                    # 'renderObjectImage': render_settings['renderObjectImage'],
+                    # 'renderDepthImage': render_settings['renderDepthImage'],
                 }
                 event = super().step(teleport_action)
             else:
@@ -289,6 +295,7 @@ class ThorEnv(Controller):
                     'z': position['z'],
                     'y': position['y'],
                     'horizon': horizon,
+                    'standing': True
                 }
                 event = super().step(teleport_action)
 
@@ -318,12 +325,13 @@ class ThorEnv(Controller):
                     'z': position['z'],
                     'y': position['y'],
                     'horizon': np.round(start_horizon * (1 - xx) + end_horizon * xx, 3),
-                    'tempRenderChange': True,
-                    'renderNormalsImage': False,
-                    'renderImage': render_settings['renderImage'],
-                    'renderClassImage': render_settings['renderClassImage'],
-                    'renderObjectImage': render_settings['renderObjectImage'],
-                    'renderDepthImage': render_settings['renderDepthImage'],
+                    'standing': True
+                    # 'tempRenderChange': True,
+                    # 'renderNormalsImage': False,
+                    # 'renderImage': render_settings['renderImage'],
+                    # 'renderClassImage': render_settings['renderClassImage'],
+                    # 'renderObjectImage': render_settings['renderObjectImage'],
+                    # 'renderDepthImage': render_settings['renderDepthImage'],
                 }
                 event = super().step(teleport_action)
             else:
@@ -334,6 +342,7 @@ class ThorEnv(Controller):
                     'z': position['z'],
                     'y': position['y'],
                     'horizon': np.round(start_horizon * (1 - xx) + end_horizon * xx, 3),
+                    'standing': True
                 }
                 event = super().step(teleport_action)
 

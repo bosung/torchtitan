@@ -108,8 +108,8 @@ def main(
     processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
     dataset = ALFREDDataset(
         processor=processor,
-        traj_data_dir='data/alfred/train_small_traj',
-        img_data_dir='data/alfred/train_small_img',
+        traj_data_dir='/torchtitan/data/alfred/train_small_traj',
+        img_data_dir='/torchtitan/data/alfred/train_small_img',
         cp_degree=1,
         eval=True)
     # data_loader = AlfredDataLoader(dp_rank, dataset, batch_size=1, world_size=world_size)
@@ -126,6 +126,8 @@ def main(
     with torch.device(init_device):
         logger.info(f"Init model on init_device: {init_device}")
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, device_map='auto')
+        state_dict = {"model": model.state_dict()}
+        dcp.load(state_dict, checkpoint_id=checkpoint_path)
 
     model.eval()
 
@@ -139,6 +141,10 @@ def main(
     device_memory_monitor.reset_peak_stats()
     
     ###################################################
+
+    act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
+    pad_tok_id = processor.tokenizer.pad_token_id
+    cp_degree = 1
 
     env = ThorEnv()
     
@@ -160,11 +166,12 @@ def main(
             max_trial = 3
 
             # context: text and image list
-            context, img_list = eval_subgoals.simulate_with_expert(env, traj, processor, eval_idx)
-            breakpoint()
-
+            context, img_list, sim_success = eval_subgoals.simulate_with_expert(env, traj, processor, eval_idx)
+            if not sim_success:
+                break # if expert traj fails, even next subgoal cannot make it
+            logger.info(f"[Prompt] {context}")
             batch = processor(images=img_list, text=context, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
-            print("Input shape: ", batch.input_ids.shape)
+            logger.info(f"Input shape: {batch.input_ids.shape}")
             
             # # break if max_steps reached ?
             done = False
@@ -177,42 +184,53 @@ def main(
 
                 #if rank == 0:
                 # broadcast batch
-                generated_tokens = generate(model, inputs)
+                generated_tokens = generate(model, batch, device, cp_degree, act_tok_id, pad_tok_id)
                 gc.collect()
 
-                if rank == 0:
-                    output_text = tokenizer.decode(new_tokens)
-                    logger.info(f"{color.blue}{output_text}\n{color.reset}")
-                    success = interact_with_env()
-                    # TODO broadcast success
+                #if rank == 0:
+                output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                logger.info(f"{color.blue}{output_text}\n{color.reset}")
+                success, done, context, img_list = eval_subgoals.interact_with_env(env, output_text, eval_idx)
+                
+                # TODO broadcast success
 
-                if success:
+                if (not success) or done:
                     break
+
+                batch = processor(images=img_list, text=context, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
 
     env.stop()
 
 @torch.no_grad()
-def generate(model, batch=None, max_new_tokens=10):
+def generate(model, batch, device, cp_degree, act_tok_id, pad_tok_id, max_new_tokens=10):
+    input_ids = batch.input_ids.to(device)
+    pixel_values = batch.pixel_values.to(device)
+    n_image =  torch.tensor([[pixel_values.shape[0]]], device=pixel_values.device)
+    logger.info(f"pixel_values: {pixel_values.shape}, n_image: {n_image}")
+    
+    seq_len = input_ids.shape[1]
+    pad_size = max(max_new_tokens, (cp_degree * 2) - (seq_len % (cp_degree * 2)))
 
-    input_ids = batch.input_ids[0].to(device)
-    pixel_values = batch.pixel_values[0].to(device)
-    #pixel_values = batch.pixel_values[0].to(torch.float32)
-    image_sizes = batch.image_sizes[0].to(device)
+    if pad_size > 0:
+        pad_token_tensors = torch.tensor([pad_tok_id] * pad_size, device=device)[None, :]
+        input_ids = torch.cat([pad_token_tensors, input_ids], dim=1) 
+        logger.info(f"with padding ==> input_ids shape {seq_len} => {input_ids.shape}, {type(input_ids)}")
 
     with torch.no_grad():
         context_embeds = model.embed(
             input_ids=input_ids,
-            pixel_values=pixel_values,
-            image_sizes=image_sizes)
+            pixel_values=pixel_values.unsqueeze(0),
+            n_image=n_image,
+        )
 
     logger.info(f"context_embeds: {type(context_embeds)}, {context_embeds.shape}, {context_embeds.dtype}")
 
     #context_embeds = context_embeds.to_local()
-    if isinstance(input_ids, DTensor):
-        tensor_list = [torch.empty_like(context_embeds) for _ in range(world_size)]
-        dist.all_gather(tensor_list, context_embeds)
-        context_embeds = torch.cat(tensor_list, dim=2)
-        del tensor_list
+    # if isinstance(input_ids, DTensor):
+    #     tensor_list = [torch.empty_like(context_embeds) for _ in range(world_size)]
+    #     dist.all_gather(tensor_list, context_embeds)
+    #     context_embeds = torch.cat(tensor_list, dim=2)
+    #     del tensor_list
 
     inputs_embeds = context_embeds.clone()
     #inputs_embeds = context_embeds
@@ -223,40 +241,45 @@ def generate(model, batch=None, max_new_tokens=10):
     #input_ids = input_ids.to_local()
 
     gc.collect()
-    torch.cuda.empty_cache()
+
+    train_context = utils.get_train_context(False, False)
 
     new_tokens = []
     for i in range(max_new_tokens):
         seq_len = inputs_embeds.shape[1]
-        # seq_len = inputs_embeds.shape[1]
-        # pad_size = (world_size * 2) - (seq_len % (world_size * 2))
-
-        max_seq = (seq_len // ((world_size * 2))) * (world_size * 2)
+        max_seq = (seq_len // ((cp_degree * 2))) * (cp_degree * 2)
         inputs_embeds = inputs_embeds[:, -max_seq:, :]
 
-        logger.info(f"inputs_embeds: {inputs_embeds.shape}")
+        position_ids = torch.arange(0, inputs_embeds.shape[1], device=inputs_embeds.device)
+        position_ids = position_ids.unsqueeze(0)
 
         context_parallel_ctx = (
             utils.create_context_parallel_ctx(
                 cp_mesh=world_mesh["cp"],
-                cp_buffers=[inputs_embeds],
-                cp_seq_dims=[1],
-                cp_no_restore_buffers={inputs_embeds},
+                cp_buffers=[inputs_embeds, position_ids],
+                cp_seq_dims=[1, 1],
+                cp_no_restore_buffers={inputs_embeds, position_ids},
                 cp_rotate_method=config.experimental.context_parallel_rotate_method,
             )
-            if parallel_dims.cp_enabled
+            if cp_degree > 1
             else None
         )
         
-        with torch.no_grad(), train_context(context_parallel_ctx):
-            output = model(inputs_embeds=inputs_embeds, num_logits_to_keep=1)
+        with train_context(context_parallel_ctx):
+            logits = model(inputs_embeds=inputs_embeds,
+            #position_ids=position_ids, # you will need later soon
+            num_logits_to_keep=1)
             #output = model(input_ids=input_ids, num_logits_to_keep=1)
 
-        new_token, _ = sample(output.logits, need_probs=True, temperature=temperature, top_k=top_k)
+        new_token, _ = sample(logits, need_probs=True, temperature=1.0)
         #new_token, _ = sample(output.logits, need_probs=True, temperature=1.0, top_k=top_k)
+        
+        if new_token.item() == act_tok_id:
+            break
+        
         new_tokens.append(new_token.item())
 
-        del output
+        del logits
 
         with torch.no_grad():
             new_tokens_emb = model.embed(input_ids=new_token.unsqueeze(0))
@@ -264,13 +287,13 @@ def generate(model, batch=None, max_new_tokens=10):
         if isinstance(new_tokens_emb, DTensor):
             new_tokens_emb = new_tokens_emb.to_local()
 
-        tensor_list = [torch.empty(inputs_embeds.shape, device=device, dtype=inputs_embeds.dtype) for _ in range(world_size)]
-        dist.all_gather(tensor_list, inputs_embeds)
-        inputs_embeds = torch.cat(tensor_list + [new_tokens_emb] , dim=1)
-        del tensor_list
+        # tensor_list = [torch.empty(inputs_embeds.shape, device=device, dtype=inputs_embeds.dtype) for _ in range(world_size)]
+        # dist.all_gather(tensor_list, inputs_embeds)
+        #inputs_embeds = torch.cat(tensor_list + [new_tokens_emb] , dim=1)
+        #del tensor_list
+        inputs_embeds = torch.cat([inputs_embeds, new_tokens_emb] , dim=1)
 
         gc.collect()
-        torch.cuda.empty_cache()
 
     return new_tokens
 
