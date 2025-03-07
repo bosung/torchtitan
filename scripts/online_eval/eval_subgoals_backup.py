@@ -9,8 +9,6 @@ import time
 import random
 from collections import defaultdict
 import subprocess
-import base64
-import io
 #from .env.thor_env import ThorEnv
 #from eval.eval import Eval
 
@@ -28,33 +26,37 @@ from torchtitan.logging import logger
 def visible(obj_list):
     return [obj for obj in obj_list if obj['visible']]
 
-def find_visible_and_property(objects, objname, property_name):
-    for obj in objects:
+def find_visible_and_property(env, objname, property_name):
+    for obj in env.last_event.metadata['objects']:
         if objname.lower() in obj['name'].lower() and obj['visible'] and obj[property_name]:
             print(obj['name'], obj['objectId'])
             return obj['objectId']
     return None
 
-def visible_and_pickupable(objects, objname):
-    return find_visible_and_property(objects, objname, 'pickupable')
+def visible_and_pickupable(env, objname):
+    return find_visible_and_property(env, objname, 'pickupable')
 
-def visible_and_receptacle(objects, objname):
-    return find_visible_and_property(objects, objname, 'receptacle')
+def visible_and_receptacle(env, objname):
+    return find_visible_and_property(env, objname, 'receptacle')
 
-def visible_and_openable(objects, objname):
-    return find_visible_and_property(objects, objname, 'openable')
+def visible_and_openable(env, objname):
+    return find_visible_and_property(env, objname, 'openable')
 
-def visible_and_sliceable(objects, objname):
-    return find_visible_and_property(objects, objname, 'sliceable')
+def visible_and_sliceable(env, objname):
+    return find_visible_and_property(env, objname, 'sliceable')
 
-def visible_and_toggleable(objects, objname):
-    return find_visible_and_property(objects, objname, 'toggleable')
+def visible_and_toggleable(env, objname):
+    return find_visible_and_property(env, objname, 'toggleable')
 
-def visible_and_isOpen(objects, objname): # closeable
-    return find_visible_and_property(objects, objname, 'isOpen')
+def visible_and_isOpen(env, objname): # closeable
+    return find_visible_and_property(env, objname, 'isOpen')
 
 
-def post_processing_action(action, objects, objname=None):
+def action_with_gt(action, env):
+    pass
+
+
+def post_processing_action(action, env, objname=None):
     actions_map = {
         "OpenObject": visible_and_openable,
         "CloseObject": visible_and_isOpen,
@@ -68,18 +70,18 @@ def post_processing_action(action, objects, objname=None):
     try: 
         if action.startswith('PutObject'):
             receptacle_obj = action.split()[-1].strip()
-            return "PutObject", visible_and_receptacle(objects, receptacle_obj)
+            return "PutObject", visible_and_receptacle(env, receptacle_obj)
         elif action.startswith('ToggleObject'):
             objname = action.split()[-1].strip()
-            return "ToggleObject", visible_and_toggleable(objects, objname)
+            return "ToggleObject", visible_and_toggleable(env, objname)
 
         for action_prefix, func in actions_map.items():
             if action.startswith('PutObject'):
                 receptacle_obj = action.split()[-1].strip()
-                return action_prefix, func(objects, receptacle_obj)
+                return action_prefix, func(env, receptacle_obj)
             elif action.startswith(action_prefix):
                 objname = action.split(action_prefix)[-1].strip()
-                return action_prefix, func(objects, objname)
+                return action_prefix, func(env, objname)
     except: # action parsing error
         return None, None
     
@@ -175,11 +177,11 @@ class EvalSubgoals():
         # set random seed for shuffling
         random.seed(int(time.time()))
 
-    def get_subgoal_idxs(self, traj):
+    def get_subgoal_idx(self, traj):
         return [sg['high_idx'] for sg in traj['plan']['high_pddl'] if sg['discrete_action']['action'] in self.subgoals_to_evaluate]
 
     @classmethod
-    def setup_scene(cls, client, traj, reward_type='dense'):
+    def setup_scene(cls, env, traj, reward_type='dense'):
         '''
         intialize the scene and agent from the task info
         '''
@@ -190,32 +192,78 @@ class EvalSubgoals():
         object_toggles = traj['scene']['object_toggles']
 
         scene_name = 'FloorPlan%d' % scene_num
-        #last_event = env.reset(scene_name)
-        last_event = client.initialize(scene=scene_name)
+        last_event = env.reset(scene_name)
 
-        #last_event = env.restore_scene()
-        if len(object_toggles) > 0:
-            client.interact({"action": dict(action='SetObjectToggles', objectToggles=object_toggles)})
+        #scene_obj_poses = [{'objectName': o['name'], 'position': o['position'], 'rotation': o['rotation']} for o in last_event.metadata['objects']]
+        #scene_obj_poses = [{o['name']: {'objectName': o['name'], 'position': o['position'], 'rotation': o['rotation']}} for o in last_event.metadata['objects']]
+        #scene_obj_poses = {o['name']: {'objectName': o['name'], 'position': o['position'], 'rotation': o['rotation']} for o in last_event.metadata['objects'] if o[']}
+        
+        #breakpoint()
 
-        if dirty_and_empty:
-            client.interact({"action": dict(action='SetStateOfAllObjects',
-                                            StateChange="CanBeDirty",
-                                            forceAction=True)})
-            client.interact({"action": dict(action='SetStateOfAllObjects',
-                                            StateChange="CanBeFilled",
-                                            forceAction=False)})
-        last_event = client.interact({"action": {"action": 'SetObjectPoses',"objectPoses": object_poses}})
+        target_obj = set()
+        for low_act in traj['plan']['low_actions']:
+            for k in low_act['api_action'].keys():
+                if 'ObjectId' in k and isinstance(low_act['api_action'][k], str):
+                    target_obj.add(low_act['api_action'][k].split("|")[0])
+            # if 'receptacleObjectId' in low_act['api_action']:
+            #     target_obj.add(low_act['api_action']['receptacleObjectId'].split("|")[0])
+            # if 'Object' in low_act['api_action']['action']:
+            #     target_obj.add(low_act['api_action']['objectId'].split("|")[0])
+            # if 'ObjectId' in low_act['api_action'].keys():
 
+
+        # update objectName bc obj name are different from ai2thor versions
+        objname_dict = {obj['name'].split("_")[0]: obj['name'] for obj in last_event.metadata['objects']}
+
+        # for obj_pose in object_poses:
+        #     name = obj_pose['objectName'].split("_")[0]
+        #     if name in objname_dict:
+        #         if objname_dict[name] != obj_pose['objectName']: # update
+        #             obj_pose.update({"objectName": objname_dict[name]})
+        #         scene_obj_poses[objname_dict[name]] = obj_pose
+
+        valid_object_poses = []
+        for obj_pose in object_poses:
+            name = obj_pose['objectName'].split("_")[0]
+            if name in objname_dict:
+                if objname_dict[name] != obj_pose['objectName']:
+                    obj_pose.update({"objectName": objname_dict[name]})
+                valid_object_poses.append(obj_pose)
+        
+        # add picuable and moveable objects manually
+        # https://github.com/allenai/ai2thor/issues/1057
+        for obj in last_event.metadata['objects']:
+            if obj['name'].split("_")[0] in target_obj and (obj['pickupable'] or obj['moveable']):
+            #if (obj['pickupable'] or obj['moveable']):
+                valid_object_poses.append({'objectName': obj['name'], 'position': obj['position'], 'rotation': obj['rotation']})
+
+        #last_event = env.restore_scene([v for k, v in scene_obj_poses.items()], object_toggles, dirty_and_empty)
+        last_event = env.restore_scene(valid_object_poses, object_toggles, dirty_and_empty)
+        if not last_event.metadata['lastActionSuccess']:
+            raise ValueError("Due to the ai2thor version conflicts.")
+        
         # initialize to start position
-        last_event = client.interact({"action": dict(traj['scene']['init_action'])})
+        # updated for ai2thor 5.0.0 (previously 2.1.0)
+        init_act = dict(
+            action=traj['scene']['init_action']['action'],
+            horizon=traj['scene']['init_action']['horizon'],
+            position={
+                'x': traj['scene']['init_action']['x'],
+                'y': traj['scene']['init_action']['y'],
+                'z': traj['scene']['init_action']['z'],
+            },
+            rotation={'x': 0, 'y': traj['scene']['init_action']['rotation'], 'z': 0},
+            standing=True
+        )
+        env.step(init_act)
+
+        # print goal instr
+        print(f"Task: {traj['task_type']} {traj['pddl_params']}")
         
         # setup task for reward
-        client.set_task(traj, last_event, reward_type=reward_type)
+        env.set_task(traj, reward_type=reward_type)
 
-        logger.info(f"Setup scene: {scene_name} Task: {traj['task_type']} {traj['pddl_params']}")
-        return last_event
-
-    def simulate_with_expert(self, client, traj_data, eval_idx, teacher_forcing=True, max_steps=2000):
+    def simulate_with_expert(self, env, traj_data, processor, eval_idx, teacher_forcing=True, max_steps=2000):
         # expert demonstration to reach eval_idx-1
         #expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
         self.expert_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
@@ -223,8 +271,8 @@ class EvalSubgoals():
         self.gt_n_step = len(gt_init_actions)
 
         # subgoal info
-        # if eval_idx >= len(traj_data['plan']['high_pddl']): # no NoOp at the last high_pddl
-        #     return False
+        if eval_idx >= len(traj_data['plan']['high_pddl']): # no NoOp at the last high_pddl
+            return None, None, False
         subgoal_action = traj_data['plan']['high_pddl'][eval_idx]['discrete_action']['action']
 
         # task goal info
@@ -237,11 +285,12 @@ class EvalSubgoals():
 
         # setup scene
         reward_type = 'dense'
-        last_event = self.setup_scene(client, traj_data, reward_type=reward_type)
-        if not last_event['lastActionSuccess']:
-            logger.info(f"ERROR - Initialization fail !")
-            return False
+        self.setup_scene(env, traj_data, reward_type=reward_type)
 
+        done, subgoal_success = False, False
+        t, fails, reward = 0, 0, 0
+        fail_from_len_limit = False
+        
         # for model inputs
         self.img_list = []
         self.prefix = ""
@@ -261,32 +310,57 @@ class EvalSubgoals():
                 prev_high_idx = curr_high_idx
 
                 # add image (new state) for the new plan
-                # buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-                # buffer.seek(0)
-                # curr_image = Image.open(buffer)
+                curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+                self.img_list.append(curr_image)
+                self.prefix += "<image>"
 
-                # self.img_list.append(curr_image)
-                # self.prefix += "<image>"
+            # migrate to ai2thor=5.0.0
 
-            if action['action'] in ['ToggleObjectOn', 'ToggleObjectOff']:
-                action['forceAction'] = True
+            # execute expert action
+            if 'PutObject' in action['action']: # expert 
+                if 'receptacleObjectId' in action:
+                    action['objectId'] = action['receptacleObjectId']
+                    del action['receptacleObjectId'] # migrate to ai2thor=5.0.0
+                if self.expert_init_actions[t-1]['action'] == 'OpenObject':
+                    action['objectId'] = self.expert_init_actions[t-1]['objectId']
+                objname = action['objectId'].split("|")[0]
+                valid_id = visible_and_receptacle(env, objname)
+                if valid_id is not None and valid_id != action['objectId']:
+                    action['objectId'] = valid_id
 
-            last_event = client.interact({"action": action})
+            elif 'Object' in action['action']:
+                obj_name = action['objectId'].split("|")[0]
+                for obj in env.last_event.metadata['objects']:
+                    if obj_name == obj['name'].split("_")[0] and obj['visible'] and action['objectId'] != obj['objectId']:
+                        action['objectId'] = obj['objectId']
+            
+            if 'ToggleObject' in action['action']:
+                if 'forceVisible' in action:
+                    del action['forceVisible']
+                if 'coordinateReceptacleObjectId' in action:
+                    del action['coordinateReceptacleObjectId']
+            if 'cleanObjectId' in action:
+                del action['cleanObjectId']
+                del action['coordinateObjectId']
 
-            if not last_event['lastActionSuccess']:
-                if not (last_event['lastAction'] in ["LookDown", "LookUp"]):
-                    logger.info(f"ERROR - expert initialization failed at {t} (action: {action})")
-                    logger.info(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
-                    return False
+            last_event = env.step(action)
+
+            if not last_event.metadata['lastActionSuccess']:
+                if last_event.metadata['lastAction'] in ['LookDown', 'LookUp']:
+                    continue
+                else:
+                    logger.info(f"ERROR - expert initialization failed with: {action}")
+                    logger.info(f"ERROR - {last_event.metadata['lastAction']}, {last_event.metadata['errorMessage']}")
+                    # if 'Object' in last_event.metadata['lastAction']:
+                    #     breakpoint()
+                    return None, None, False
 
             act_str = serialize_action(action)
             self.prefix += '<|act|>' + act_str + '<|act|>'
             self.t += 1
 
-            buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-            buffer.seek(0)
-            _image = Image.open(buffer)
-            _image.save('temp.png')
+            #if 'Object' in action['action']:
+            _image = Image.fromarray(np.uint8(env.last_event.frame))
             self.img_list.append(_image)
             self.prefix += "<image>"
             # else:
@@ -296,10 +370,10 @@ class EvalSubgoals():
             #         self.prefix += ' <image>'
             
             # update transition reward
-            _ = client.env.get_transition_reward(last_event)
+            _ = env.get_transition_reward()
 
         # Done with expert actions
-        finished = client.env.get_subgoal_idx()
+        finished = env.get_subgoal_idx()
 
         if len(self.expert_init_actions) > 0:
             curr_high_idx += 1
@@ -308,48 +382,49 @@ class EvalSubgoals():
         
         self.prefix += f" Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][curr_high_idx])}"
 
-        if curr_high_idx == 0:
-            buffer = io.BytesIO( base64.b64decode(last_event['frame_bytes']))
-            buffer.seek(0)
-            curr_image = Image.open(buffer)
-            curr_image.save(f"image_220.png")
-            self.img_list.append(curr_image)
-            self.prefix += "<image><|act|>"
-        else:
-            self.prefix += "<|act|>"
+        curr_image = Image.fromarray(np.uint8(env.last_event.frame))
+        self.img_list.append(curr_image)
+        self.prefix += "<image>"
         
-        return True
+        prompt = self.prefix + "<|act|>"
 
-    def interact_with_env(self, client, action, eval_idx):
+        batch = processor(images=self.img_list, text=prompt, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
+        #batch = processor(images=self.img_list, text=prompt, padding=True, return_tensors="pt").to("cuda")
+        logger.info(f"[Prompt] {prompt}")
+        logger.info(f"batch.input_ids {batch.input_ids.shape} {batch.input_ids.dtype}")
+        logger.info(f"batch.pixel_values {batch.pixel_values.shape} {batch.pixel_values.dtype}")
+        
+        return batch.input_ids, batch.pixel_values, True
+
+    def interact_with_env(self, env, processor, action, eval_idx):
         smooth_events = None
-        subgoal_success = False
         try:
             # convert act to api_action
             if 'Object' in action:
-                _action, obj_id = post_processing_action(action, client.env.last_event['objects'])
+                _action, obj_id = post_processing_action(action, env)
                 if 'PutObject' in action and obj_id:
-                    inventory_object_id = client.env.last_event['inventoryObjects'][0]['objectId']
+                    inventory_object_id = env.last_event.metadata['inventoryObjects'][0]['objectId']
                     put_action = dict(action="PutObject",
                                 objectId=inventory_object_id,
                                 receptacleObjectId=obj_id,
                                 forceAction=True,
                                 placeStationary=True)
-                    last_event = client.interact({"action": put_action})
+                    last_event = env.step(put_action)
                 elif obj_id:
-                    last_event = client.interact({"action": dict(action=_action, objectId=obj_id, forceAction=True)})
+                    last_event = env.step(dict(action=_action, objectId=obj_id))
             else:
                 #last_event, smooth_events = env.step(dict(action=action, forceAction=True), smooth_nav=True)
-                last_event = client.interact({"action": dict(action=action, forceAction=True)})
+                last_event = env.step(dict(action=action, forceAction=True))
 
-            t_success = last_event['lastActionSuccess']
+            t_success = last_event.metadata['lastActionSuccess']
         except:
             t_success = False
 
         if not t_success:
-            logger.info(f"FAIL -- action: {action}")
-            return t_success, subgoal_success
+            logger.info(f"FAIL -- action: {env.last_event.metadata['lastAction']} error: {env.last_event.metadata['errorMessage']}")
+            return False, False, None, None
 
-        self.prefix += action + '<|act|>'
+        self.prefix += '<|act|>' + action + '<|act|>'
 
         # if smooth_events:
         #     for se in smooth_events:
@@ -357,45 +432,44 @@ class EvalSubgoals():
         #         _image = Image.fromarray(np.uint8(se.frame))
         #         self.img_list.append(_image)
         # else:
-        self.prefix += '<image>'
-        buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-        buffer.seek(0)
-        _image = Image.open(buffer)
+        self.prefix += ' <image>'
+        _image = Image.fromarray(np.uint8(last_event.frame))
         self.img_list.append(_image)
 
         # next time-step
         # t_done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
-        t_reward, t_done, sg_done = client.env.get_transition_reward(last_event) # type: (float, bool)
-
-        logger.info(f"t: {self.t}, t_done: {t_done}, sg_done: {sg_done} || Pred: {action}, success: {t_success}, Finished: {client.env.get_subgoal_idx()}")
+        t_reward, t_done, sg_done = env.get_transition_reward() # type: (float, bool)
+        
+        # debug
+        # print(f"t: {t}, Expert: {traj_data['plan']['low_actions'][t]['api_action']['action']} | {traj_data['plan']['low_actions'][t]['api_action']}")
+        #gt_action = traj_data['plan']['low_actions'][t]['api_action']['action'] if t < len(traj_data['plan']['low_actions']) else None
+        logger.info(f"t: {self.t}, t_done: {t_done}, sg_done: {sg_done} || Pred: {action}, success: {t_success}, Finished: {env.get_subgoal_idx()}")
 
         # update subgoals
-        finished = client.env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
+        finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
         # curr_subgoal_idx = finished + 1
         if finished == eval_idx:
             subgoal_success = True
-            return t_success, subgoal_success
+            return t_success, subgoal_success, self.prefix, self.img_list
             
         if self.t > (self.gt_n_step * 3):
             logger.info(f"fail due to the time step limit -- t: {self.t} > {(self.gt_n_step * 3)} (limit)")
-            return t_success, subgoal_success
+            return False, False, None, None
 
-        # for the next action prediction
+        # increment time index
         self.t += 1
+
         self.prefix += '<|act|>'
 
-        return t_success, subgoal_success
-
-    def process_input(self, processor):
         #return t_success, t_done, self.prefix, self.img_list
         batch = processor(images=self.img_list, text=self.prefix, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
         #batch = processor(images=self.img_list, text=prompt, padding=True, return_tensors="pt").to("cuda")
 
         logger.info(f"batch.input_ids {batch.input_ids.shape} {batch.input_ids.dtype}")
         logger.info(f"batch.pixel_values {batch.pixel_values.shape} {batch.pixel_values.dtype}")
-        logger.info(f"[Prompt] {self.prefix}")
         
-        return batch.input_ids, batch.pixel_values
+        return batch.input_ids, batch.pixel_values, True
+        # ==========================================================
 
     def update_metrics(self, traj_data, eval_idx, subgoal_success, test_id):
         # metrics
@@ -489,24 +563,29 @@ class EvalSubgoals():
                 "stat": self.stat}
 
     def sync_metrics_s3(self, aws_s3_path, test_id):
-        try:
-            # Run aws s3 copy
-            with open("stat.json", "w") as f:
-                f.write(json.dumps(self.stat, indent=4))
+        # Push checkpoints from local_rank 0
+        if dist.get_rank() == 0:
+            try:
+                # Run aws s3 copy
+                with open("stat.json", "w") as f:
+                    f.write(json.dumps(self.stat, indent=4))
 
-            if aws_s3_path[-1] == "/":
-                aws_s3_path = aws_s3_path[:-1]
+                if aws_s3_path[-1] == "/":
+                    aws_s3_path = aws_s3_path[:-1]
 
-            sync_command = f"aws s3 cp stat.json {aws_s3_path}/test_id-{test_id}.json"
-            subprocess.run(
-                sync_command,
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            logger.info(f"Started S3 copy for eval results at test_id {test_id}")
-        except Exception as e:
-            logger.error(f"Error starting S3 copy: {e}")
+                sync_command = f"aws s3 cp stat.json {aws_s3_path}/test_id-{test_id}.json"
+                subprocess.run(
+                    sync_command,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                logger.info(f"Started S3 copy for eval results at test_id {test_id}")
+            except Exception as e:
+                logger.error(f"Error starting S3 copy: {e}")
+
+        # Ensure upload is complete before proceeding
+        dist.barrier()
 
     def create_stats(self):
         '''

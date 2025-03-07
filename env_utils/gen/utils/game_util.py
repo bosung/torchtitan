@@ -354,8 +354,8 @@ def get_obj_of_type_closest_to_obj(object_type, ref_object_id, metadata):
     return closest_objs_of_type[0] # retrun the first closest visible object
 
 
-def get_objects_with_name_and_prop(name, prop, metadata):
-    return [obj for obj in metadata['objects']
+def get_objects_with_name_and_prop(name, prop, objects):
+    return [obj for obj in objects
             if name == object_id_to_name(obj['objectId']) and obj[prop]]
 
 

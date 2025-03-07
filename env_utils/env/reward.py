@@ -93,11 +93,10 @@ class BaseAction(object):
     base class for API actions
     '''
 
-    def __init__(self, gt_graph, env, rewards, strict=True):
+    def __init__(self, gt_graph, env, rewards):
         self.gt_graph = gt_graph # for navigation
         self.env = env
         self.rewards = rewards
-        self.strict = strict
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
         reward, done = self.rewards['neutral'], True
@@ -112,13 +111,13 @@ class GotoLocationAction(BaseAction):
     valid_actions = {'MoveAhead', 'RotateLeft', 'RotateRight', 'LookUp', 'LookDown', 'Teleport', 'TeleportFull'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
-        curr_pose = state.pose_discrete
-        prev_pose = prev_state.pose_discrete
+        curr_pose = state['pose_discrete']
+        prev_pose = prev_state['pose_discrete']
         tar_pose = tuple([int(i) for i in subgoal['location'].split('|')[1:]])
 
         prev_actions, _ = self.gt_graph.get_shortest_path(prev_pose, tar_pose)
@@ -151,15 +150,15 @@ class PickupObjectAction(BaseAction):
     valid_actions = {'PickupObject', 'OpenObject', 'CloseObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
-        inventory_objects = state.metadata['inventoryObjects']
+        inventory_objects = state['inventoryObjects']
         if len(inventory_objects):
-            inv_object_id = state.metadata['inventoryObjects'][0]['objectId']
+            inv_object_id = state['inventoryObjects'][0]['objectId']
             goal_object_id = subgoal['objectId']
 
             # doesn't matter which slice you pick up
@@ -181,14 +180,14 @@ class PutObjectAction(BaseAction):
     valid_actions = {'PutObject', 'OpenObject', 'CloseObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
         target_object_id = subgoal['objectId']
-        recep_object = get_object(subgoal['receptacleObjectId'], state.metadata)
+        recep_object = get_object(subgoal['receptacleObjectId'], state)
         if recep_object is not None:
             is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
             reward, done = (self.rewards['positive'], True) if is_target_in_recep else (self.rewards['negative'], False)
@@ -203,13 +202,13 @@ class OpenObjectAction(BaseAction):
     valid_actions = {'OpenObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
-        target_recep = get_object(subgoal['objectId'], state.metadata)
+        target_recep = get_object(subgoal['objectId'], state)
         if target_recep is not None:
             is_target_open = target_recep['isOpen']
             reward, done = (self.rewards['positive'], True) if is_target_open else (self.rewards['negative'], False)
@@ -224,13 +223,13 @@ class CloseObjectAction(BaseAction):
     valid_actions = {'CloseObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['negative'], False
-        target_recep = get_object(subgoal['objectId'], state.metadata)
+        target_recep = get_object(subgoal['objectId'], state)
         if target_recep is not None:
             is_target_closed = not target_recep['isOpen']
             reward, done = (self.rewards['positive'], True) if is_target_closed else (self.rewards['negative'], False)
@@ -245,13 +244,13 @@ class ToggleObjectAction(BaseAction):
     valid_actions = {'ToggleObjectOn', 'ToggleObjectOff'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
-        target_toggle = get_object(subgoal['objectId'], state.metadata)
+        target_toggle = get_object(subgoal['objectId'], state)
         if target_toggle is not None:
             is_target_toggled = target_toggle['isToggled']
             reward, done = (self.rewards['positive'], True) if is_target_toggled else (self.rewards['negative'], False)
@@ -266,13 +265,13 @@ class SliceObjectAction(BaseAction):
     valid_actions = {'SliceObject', 'OpenObject', 'CloseObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
-        target_object = get_object(subgoal['objectId'], state.metadata)
+        target_object = get_object(subgoal['objectId'], state)
         if target_object is not None:
             is_target_sliced = target_object['isSliced']
             reward, done = (self.rewards['positive'], True) if is_target_sliced else (self.rewards['negative'], False)
@@ -287,13 +286,13 @@ class CleanObjectAction(BaseAction):
     valid_actions = {'PutObject', 'PickupObject', 'ToggleObjectOn', 'ToggleObjectOff'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
         reward, done = self.rewards['neutral'], False
-        clean_object = get_object(subgoal['cleanObjectId'], state.metadata)
+        clean_object = get_object(subgoal['cleanObjectId'], state)
         if clean_object is not None:
             is_obj_clean = clean_object['objectId'] in self.env.cleaned_objects
             reward, done = (self.rewards['positive'], True) if is_obj_clean else (self.rewards['negative'], False)
@@ -308,7 +307,7 @@ class HeatObjectAction(BaseAction):
     valid_actions = {'OpenObject', 'CloseObject', 'PickupObject', 'PutObject', 'ToggleObjectOn', 'ToggleObjectOff'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
@@ -316,7 +315,7 @@ class HeatObjectAction(BaseAction):
         next_put_goal_idx = goal_idx+2 # (+1) GotoLocation -> (+2) PutObject (get the objectId from the PutObject action)
         if next_put_goal_idx < len(expert_plan):
             heat_object_id = expert_plan[next_put_goal_idx]['planner_action']['objectId']
-            heat_object = get_object(heat_object_id, state.metadata)
+            heat_object = get_object(heat_object_id, state)
             is_obj_hot = heat_object['objectId'] in self.env.heated_objects
             reward, done = (self.rewards['positive'], True) if is_obj_hot else (self.rewards['negative'], False)
         return reward, done
@@ -330,7 +329,7 @@ class CoolObjectAction(BaseAction):
     valid_actions = {'OpenObject', 'CloseObject', 'PickupObject', 'PutObject'}
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
-        if state.metadata['lastAction'] not in self.valid_actions:
+        if state['lastAction'] not in self.valid_actions:
             reward, done = self.rewards['invalid_action'], False
             return reward, done
 
@@ -339,7 +338,7 @@ class CoolObjectAction(BaseAction):
         next_put_goal_idx = goal_idx+2 # (+1) GotoLocation -> (+2) PutObject (get the objectId from the PutObject action)
         if next_put_goal_idx < len(expert_plan):
             cool_object_id = expert_plan[next_put_goal_idx]['planner_action']['objectId']
-            cool_object = get_object(cool_object_id, state.metadata)
+            cool_object = get_object(cool_object_id, state)
             is_obj_cool = cool_object['objectId'] in self.env.cooled_objects
             
             # TODO(mohit): support dense rewards for all subgoals
@@ -349,29 +348,29 @@ class CoolObjectAction(BaseAction):
                 reward, done = self.rewards['positive'], False
 
             # intermediate reward for opening fridge after object is cooled
-            elif is_obj_cool and state.metadata['lastAction']=='OpenObject':
-                target_recep = get_object(subgoal['objectId'], state.metadata)
+            elif is_obj_cool and state['lastAction']=='OpenObject':
+                target_recep = get_object(subgoal['objectId'], state)
                 if target_recep is not None and not self.env.reopen_reward:
                     if target_recep['isOpen']:
                         self.env.reopen_reward = True
                         reward, done = self.rewards['positive'], False
 
             # intermediate reward for picking up cooled object after reopening fridge
-            elif is_obj_cool and state.metadata['lastAction']=='PickupObject':
-                inventory_objects = state.metadata['inventoryObjects']
+            elif is_obj_cool and state['lastAction']=='PickupObject':
+                inventory_objects = state['inventoryObjects']
                 if len(inventory_objects):
-                    inv_object_id = state.metadata['inventoryObjects'][0]['objectId']
+                    inv_object_id = state['inventoryObjects'][0]['objectId']
                     if inv_object_id == cool_object_id:
                         reward, done = self.rewards['positive'], True # Subgoal completed
 
         return reward, done
 
 
-def get_action(action_type, gt_graph, env, reward_config, strict):
+def get_action(action_type, gt_graph, env, reward_config):
     action_type_str = action_type + "Action"
 
     if action_type_str in globals():
         action = globals()[action_type_str]
-        return action(gt_graph, env, reward_config[action_type_str], strict)
+        return action(gt_graph, env, reward_config[action_type_str])
     else:
         raise Exception("Invalid action_type %s" % action_type_str)

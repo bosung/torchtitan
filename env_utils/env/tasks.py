@@ -11,10 +11,9 @@ class BaseTask(object):
     base class for tasks
     '''
 
-    def __init__(self, traj, env, reward_type='sparse', max_episode_length=2000):
+    def __init__(self, traj, last_event, reward_type='sparse', max_episode_length=2000):
         # settings
         self.traj = traj
-        self.env = env
         self.task_type = self.traj['task_type']
         self.max_episode_length = max_episode_length
         self.reward_type = reward_type
@@ -36,7 +35,7 @@ class BaseTask(object):
         self.strict = 'strict' in reward_type
 
         # prev state
-        self.prev_state = self.env.last_event
+        self.prev_state = last_event
 
     def load_reward_config(self, config_file='rewards.config'):
         '''
@@ -69,18 +68,17 @@ class BaseTask(object):
         else:
             return len(high_pddl) 
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         '''
         check if the overall task goal was satisfied.
         '''
         raise NotImplementedError
 
-    def transition_reward(self, state):
+    def transition_reward(self, state, env):
         '''
         immediate reward given the current state
         '''
         reward = 0
-
         # goal completed
         if self.goal_finished:
             done = True
@@ -91,8 +89,9 @@ class BaseTask(object):
         action_type = expert_plan[self.goal_idx]['planner_action']['action']
 
         # subgoal reward
+        sg_done = False
         if "dense" in self.reward_type:
-            action = get_action(action_type, self.gt_graph, self.env, self.reward_config, self.strict)
+            action = get_action(action_type, self.gt_graph, env, self.reward_config)
             sg_reward, sg_done = action.get_reward(state, self.prev_state, expert_plan, self.goal_idx)
             reward += sg_reward
             if sg_done:
@@ -101,17 +100,17 @@ class BaseTask(object):
                     self.goal_idx += 1
 
         # end task reward
-        goal_finished = self.goal_satisfied(state)
+        goal_finished = self.goal_satisfied(state, env)
         if goal_finished:
             reward += self.reward_config['Generic']['goal_reward']
             self.goal_finished = True
 
         # success reward
-        if "success" in self.reward_type and self.env.last_event.metadata['lastActionSuccess']:
+        if "success" in self.reward_type and state['lastActionSuccess']:
             reward += self.reward_config['Generic']['success']
 
         # failure reward
-        if "failure" in self.reward_type and not self.env.last_event.metadata['lastActionSuccess']:
+        if "failure" in self.reward_type and not state['lastActionSuccess']:
             reward += self.reward_config['Generic']['failure']
 
         # step penalty
@@ -119,7 +118,7 @@ class BaseTask(object):
             reward += self.reward_config['Generic']['step_penalty']
 
         # save event
-        self.prev_state = self.env.last_event
+        self.prev_state = state
 
         # step and check if max_episode_length reached
         self.step_num += 1
@@ -170,7 +169,7 @@ class PickAndPlaceSimpleTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class is inside any receptacle of 'parent' class
         pcs = self.goal_conditions_met(state)
         return pcs[0] == pcs[1]
@@ -180,8 +179,8 @@ class PickAndPlaceSimpleTask(BaseTask):
         s = 0
 
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         # check if object needs to be sliced
         if 'Sliced' in targets['object']:
@@ -208,7 +207,7 @@ class PickTwoObjAndPlaceTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if two objects of 'object' class are in any receptacle of 'parent' class
         pcs = self.goal_conditions_met(state)
         return pcs[0] == pcs[1]
@@ -218,14 +217,14 @@ class PickTwoObjAndPlaceTask(BaseTask):
         s = 0
 
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         # check if object needs to be sliced
         if 'Sliced' in targets['object']:
             ts += 2
             s += min(len([p for p in pickupables if 'Sliced' in p['objectId']]), 2)
-
+            
         # placing each object counts as a goal_condition
         s += min(np.max([sum([1 if r['receptacleObjectIds'] is not None
                                    and p['objectId'] in r['receptacleObjectIds'] else 0
@@ -245,7 +244,7 @@ class LookAtObjInLightTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class is being held in front of 'toggle' object that is turned on
         pcs = self.goal_conditions_met(state)
         return pcs[0] == pcs[1]
@@ -255,9 +254,9 @@ class LookAtObjInLightTask(BaseTask):
         s = 0
 
         targets = self.get_targets()
-        toggleables = get_objects_with_name_and_prop(targets['toggle'], 'toggleable', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
-        inventory_objects = state.metadata['inventoryObjects']
+        toggleables = get_objects_with_name_and_prop(targets['toggle'], 'toggleable', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
+        inventory_objects = state['inventoryObjects']
 
         # check if object needs to be sliced
         if 'Sliced' in targets['object']:
@@ -286,18 +285,18 @@ class PickHeatThenPlaceInRecepTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class inside receptacle of 'parent' class is hot
-        pcs = self.goal_conditions_met(state)
+        pcs = self.goal_conditions_met(state, env)
         return pcs[0] == pcs[1]
 
-    def goal_conditions_met(self, state):
+    def goal_conditions_met(self, state, env):
         ts = 3
         s = 0
 
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         # check if object needs to be sliced
         if 'Sliced' in targets['object']:
@@ -307,7 +306,7 @@ class PickHeatThenPlaceInRecepTask(BaseTask):
 
         objs_in_place = [p['objectId'] for p in pickupables for r in receptacles
                          if r['receptacleObjectIds'] is not None and p['objectId'] in r['receptacleObjectIds']]
-        objs_heated = [p['objectId'] for p in pickupables if p['objectId'] in self.env.heated_objects]
+        objs_heated = [p['objectId'] for p in pickupables if p['objectId'] in env.heated_objects]
 
         # check if object is in the receptacle
         if len(objs_in_place) > 0:
@@ -333,18 +332,18 @@ class PickCoolThenPlaceInRecepTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class inside receptacle of 'parent' class is cold
-        pcs = self.goal_conditions_met(state)
+        pcs = self.goal_conditions_met(state, env)
         return pcs[0] == pcs[1]
 
-    def goal_conditions_met(self, state):
+    def goal_conditions_met(self, state, env):
         ts = 3
         s = 0
 
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         if 'Sliced' in targets['object']:
             ts += 1
@@ -353,7 +352,7 @@ class PickCoolThenPlaceInRecepTask(BaseTask):
 
         objs_in_place = [p['objectId'] for p in pickupables for r in receptacles
                          if r['receptacleObjectIds'] is not None and p['objectId'] in r['receptacleObjectIds']]
-        objs_cooled = [p['objectId'] for p in pickupables if p['objectId'] in self.env.cooled_objects]
+        objs_cooled = [p['objectId'] for p in pickupables if p['objectId'] in env.cooled_objects]
 
         # check if object is in the receptacle
         if len(objs_in_place) > 0:
@@ -379,18 +378,18 @@ class PickCleanThenPlaceInRecepTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class inside receptacle of 'parent' class is clean
-        pcs = self.goal_conditions_met(state)
+        pcs = self.goal_conditions_met(state, env)
         return pcs[0] == pcs[1]
 
-    def goal_conditions_met(self, state):
+    def goal_conditions_met(self, state, env):
         ts = 3
         s = 0
 
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         if 'Sliced' in targets['object']:
             ts += 1
@@ -399,7 +398,7 @@ class PickCleanThenPlaceInRecepTask(BaseTask):
 
         objs_in_place = [p['objectId'] for p in pickupables for r in receptacles
                          if r['receptacleObjectIds'] is not None and p['objectId'] in r['receptacleObjectIds']]
-        objs_cleaned = [p['objectId'] for p in pickupables if p['objectId'] in self.env.cleaned_objects]
+        objs_cleaned = [p['objectId'] for p in pickupables if p['objectId'] in env.cleaned_objects]
 
         # check if object is in the receptacle
         if len(objs_in_place) > 0:
@@ -425,7 +424,7 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def goal_satisfied(self, state):
+    def goal_satisfied(self, state, env):
         # check if any object of 'object' class is inside any movable receptacle of 'mrecep' class at receptacle of 'parent' class
         pcs = self.goal_conditions_met(state)
         return pcs[0] == pcs[1]
@@ -435,9 +434,9 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
         s = 0
         
         targets = self.get_targets()
-        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state.metadata)
-        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state.metadata)
-        movables = get_objects_with_name_and_prop(targets['mrecep'], 'pickupable', state.metadata)
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
+        movables = get_objects_with_name_and_prop(targets['mrecep'], 'pickupable', state['objects'])
 
         # check if object needs to be sliced
         if 'Sliced' in targets['object']:
@@ -469,11 +468,11 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
         super().reset()
 
 
-def get_task(task_type, traj, env, reward_type='sparse', max_episode_length=2000):
+def get_task(task_type, traj, last_event, reward_type='sparse', max_episode_length=2000):
     task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
     
     if task_class_str in globals():
         task = globals()[task_class_str]
-        return task(traj, env, reward_type=reward_type, max_episode_length=max_episode_length)
+        return task(traj, last_event, reward_type=reward_type, max_episode_length=max_episode_length)
     else:
         raise Exception("Invalid task_type %s" % task_class_str)

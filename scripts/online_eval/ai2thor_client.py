@@ -1,34 +1,18 @@
-import cv2
-import copy
-import env_utils.gen.constants as constants
-import numpy as np
-from collections import Counter, OrderedDict
+import requests
+import json
+import time
+import argparse
 from env_utils.env.tasks import get_task
-from ai2thor.controller import Controller
-import env_utils.gen.utils.image_util as image_util
-from env_utils.gen.utils import game_util
-from env_utils.gen.utils.game_util import get_objects_of_type, get_obj_of_type_closest_to_obj
-import ai2thor.platform
+import env_utils.gen.constants as constants
 
-DEFAULT_RENDER_SETTINGS = {'renderImage': True,
-                           'renderDepthImage': False,
-                           'renderClassImage': False,
-                           'renderObjectImage': False,
-                           }
-
-class ThorEnv(Controller):
+class ThorEnv():
     '''
     an extension of ai2thor.controller.Controller for ALFRED tasks
     '''
-    def __init__(self, x_display=constants.X_DISPLAY,
-                 player_screen_height=constants.DETECTION_SCREEN_HEIGHT,
-                 player_screen_width=constants.DETECTION_SCREEN_WIDTH,
-                 quality='MediumCloseFitShadows',
-                 build_path=constants.BUILD_PATH):
-
+    def __init__(self):
         #super().__init__(quality=quality)
         # controller = ai2thor.controller.Controller(platform=ai2thor.platform.CloudRendering, scene='FloorPlan28')
-        super().__init__(platform=ai2thor.platform.CloudRendering)
+        #super().__init__(platform=ai2thor.platform.CloudRendering)
         # self.local_executable_path = build_path
         # self.start(x_display=x_display,
         #            height=player_screen_height,
@@ -124,17 +108,17 @@ class ThorEnv(Controller):
         last_event = super().step((dict(action='SetObjectPoses', objectPoses=object_poses)))
         return last_event
 
-    def set_task(self, traj, reward_type='sparse', max_episode_length=2000):
+    def set_task(self, traj, last_event, reward_type='sparse', max_episode_length=2000):
         '''
         set the current task type (one of 7 tasks)
         '''
         task_type = traj['task_type']
-        self.task = get_task(task_type, traj, self, reward_type=reward_type, max_episode_length=max_episode_length)
-
+        self.task = get_task(task_type, traj, last_event, reward_type=reward_type, max_episode_length=max_episode_length)
+    '''
     def step(self, action, smooth_nav=False, quality=None, raise_for_failure=False):
-        '''
-        overrides ai2thor.controller.Controller.step() for smooth navigation and goal_condition updates
-        '''
+
+        # overrides ai2thor.controller.Controller.step() for smooth navigation and goal_condition updates
+
         if smooth_nav:
             smooth_events = None
             if "MoveAhead" in action['action']:
@@ -161,7 +145,7 @@ class ThorEnv(Controller):
         if smooth_nav:
             return event, smooth_events
         return event
-
+    '''
     def check_post_conditions(self, action):
         '''
         handle special action post-conditions
@@ -169,50 +153,48 @@ class ThorEnv(Controller):
         if action == 'ToggleObjectOn':
             self.check_clean(action['objectId'])
 
-    def update_states(self, action):
+    def update_states(self, action, event):
         '''
         extra updates to metadata after step
         '''
         # add 'cleaned' to all object that were washed in the sink
-        event = self.last_event
-        '''
-        if event.metadata['lastActionSuccess']:
+        if event['lastActionSuccess']:
+            event_metadata = {'objects': event['objects']} # make compatiable with util funcs below
             # clean
-            # TODO migate to ai2thor==5.0.0 what about objectID ? 
             if action == 'ToggleObjectOn' and "Faucet" in action['objectId']:
-                sink_basin = get_obj_of_type_closest_to_obj('SinkBasin', action['objectId'], event.metadata)
+                sink_basin = get_obj_of_type_closest_to_obj('SinkBasin', action['objectId'], event_metadata)
                 cleaned_object_ids = sink_basin['receptacleObjectIds']
                 self.cleaned_objects = self.cleaned_objects | set(cleaned_object_ids) if cleaned_object_ids is not None else set()
             # heat
             if action == 'ToggleObjectOn' and "Microwave" in action['objectId']:
-                microwave = get_objects_of_type('Microwave', event.metadata)[0]
+                microwave = get_objects_of_type('Microwave', event_metadata)[0]
                 heated_object_ids = microwave['receptacleObjectIds']
                 self.heated_objects = self.heated_objects | set(heated_object_ids) if heated_object_ids is not None else set()
             # cool
             if action == 'CloseObject' and "Fridge" in action['objectId']:
-                fridge = get_objects_of_type('Fridge', event.metadata)[0]
+                fridge = get_objects_of_type('Fridge', event_metadata)[0]
                 cooled_object_ids = fridge['receptacleObjectIds']
                 self.cooled_objects = self.cooled_objects | set(cooled_object_ids) if cooled_object_ids is not None else set()
-            '''
+
         return event
 
-    def get_transition_reward(self):
+    def get_transition_reward(self, last_event):
         if self.task is None:
             raise Exception("WARNING: no task setup for transition_reward")
         else:
-            return self.task.transition_reward(self.last_event)
+            return self.task.transition_reward(last_event, self)
 
     def get_goal_satisfied(self):
         if self.task is None:
             raise Exception("WARNING: no task setup for goal_satisfied")
         else:
-            return self.task.goal_satisfied(self.last_event)
+            return self.task.goal_satisfied(self, self.last_event)
 
     def get_goal_conditions_met(self):
         if self.task is None:
             raise Exception("WARNING: no task setup for goal_satisfied")
         else:
-            return self.task.goal_conditions_met(self.last_event)
+            return self.task.goal_conditions_met(self, self.last_event)
 
     def get_subgoal_idx(self):
         if self.task is None:
@@ -507,11 +489,10 @@ class ThorEnv(Controller):
 
         ordered_instance_ids = [id for id in instances_ids if id in pruned_instance_ids]
         return ordered_instance_ids
-
+    '''
     def va_interact(self, action, interact_mask=None, smooth_nav=True, mask_px_sample=1, debug=False):
-        '''
-        interact mask based action call
-        '''
+
+        # interact mask based action call
 
         all_ids = []
 
@@ -615,3 +596,49 @@ class ThorEnv(Controller):
     @staticmethod
     def decompress_mask(compressed_mask):
         return image_util.decompress_mask(compressed_mask)
+    '''
+
+class AI2THORClient:
+    def __init__(self, service_url="http://localhost:5000"):
+        self.service_url = service_url
+        self.check_service()
+        self.env = ThorEnv()
+        self.last_event = None
+    
+    def check_service(self):
+        """Check if the AI2THOR service is running"""
+        try:
+            response = requests.get(f"{self.service_url}/status")
+            if response.status_code == 200:
+                print("AI2THOR service is running")
+            else:
+                print("AI2THOR service returned unexpected response")
+        except requests.exceptions.ConnectionError:
+            print("ERROR: Cannot connect to AI2THOR service. Make sure it's running.")
+            exit(1)
+    
+    def initialize(self, scene="FloorPlan1"):
+        """Initialize the AI2THOR environment"""
+        response = requests.post(
+            f"{self.service_url}/initialize",
+            json={"scene": scene}
+        )
+        return response.json()
+    
+    def interact(self, action):
+        """Send an action to the AI2THOR environment"""
+        response = requests.post(
+            f"{self.service_url}/interact",
+            json={"action": action}
+        )
+        last_event = response.json()
+        self.env.last_event = last_event
+        self.env.last_event = self.env.update_states(action, last_event)
+        self.env.check_post_conditions(action)
+        return self.env.last_event
+
+    # def get_transition_reward(self, last_event):
+    #     return self.env.get_transition_reward(last_event)
+
+    def set_task(self, traj, last_event, reward_type):
+        self.env.set_task(traj, last_event, reward_type)
