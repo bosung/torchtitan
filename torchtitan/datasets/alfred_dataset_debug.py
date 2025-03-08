@@ -12,15 +12,18 @@ tokenizer = processor.tokenizer
 #img_data_dir = img_data_dir = '/root/torchtitan/data/alfred-full/data'
 traj_data_dir = 'data/alfred/train_traj'
 img_data_dir = 'data/alfred/train_img'
-processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
+processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
 
 # from torchtitan.datasets.hf_datasets import DPAwareDataLoader
 from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
-dataset = ALFREDDataset(processor=processor, 
-traj_data_dir=traj_data_dir,img_data_dir=img_data_dir, max_seq_len=32768)
+dataset = ALFREDDataset(
+    processor=processor, 
+    traj_data_dir=traj_data_dir,
+    img_data_dir=img_data_dir,
+    max_seq_len=32768)
 dp_rank=0
 data_loader = AlfredDataLoader(dp_rank, dataset, 
-                                batch_size=2,
+                                batch_size=1,
                                 world_size=1)
 
 count = 0

@@ -21,21 +21,36 @@ import tarfile
 from io import BytesIO
 
 
+# def extract_and_convert_tar(tar_path):
+#     """Extracts a .tar file and converts all .jpg files inside to a list of PIL images."""
+#     pil_images = []
+    
+#     with tarfile.open(tar_path, 'r') as tar:
+#         for member in tar.getmembers():
+#             if member.isfile() and member.name.lower().endswith(".jpg"):
+#                 file_obj = tar.extractfile(member)
+#                 if file_obj:
+#                     image = Image.open(BytesIO(file_obj.read()))
+#                     image = image.convert("RGB")  # Ensure consistent format
+#                     pil_images.append(image)
+    
+#     return pil_images
+
 def extract_and_convert_tar(tar_path):
-    """Extracts a .tar file and converts all .jpg files inside to a list of PIL images."""
-    pil_images = []
+    """Extracts a .tar file and converts all .jpg files inside to a dictionary where keys are filenames and values are PIL images."""
+    image_dict = {}
     
     with tarfile.open(tar_path, 'r') as tar:
         for member in tar.getmembers():
             if member.isfile() and member.name.lower().endswith(".jpg"):
                 file_obj = tar.extractfile(member)
                 if file_obj:
+                    base_filename = os.path.basename(member.name)
                     image = Image.open(BytesIO(file_obj.read()))
                     image = image.convert("RGB")  # Ensure consistent format
-                    pil_images.append(image)
+                    image_dict[base_filename] = image
     
-    return pil_images
-
+    return image_dict
 
 def pad_to_multiple(tensor, multiple=4, pad_token=0):
     length = tensor.shape[1]
@@ -114,6 +129,8 @@ class ALFREDDataset(IterableDataset, Stateful):
         self._sample_idx = 0
         self._chunk_idx = 0
 
+        self.use_only_last_frame = True
+
         if len(self.traj_data) == 0:
             self._load_traj_data()
 
@@ -148,15 +165,12 @@ class ALFREDDataset(IterableDataset, Stateful):
                     if n_act_token == 0:
                         logger.warning(f"Skip this chunk - no target labels (action tokens)")
                         continue
-                    if len(chunk['img_list']) != n_img_token:
+                    if not self.use_only_last_frame and len(chunk['img_list']) != n_img_token:
                         logger.warning(f"Some images are missed -- expected {n_img_token}, but {len(chunk['img_list'])}")
                         logger.warning(f"len(chunk['img_list']): {len(chunk['img_list'])}, len(chunk['lang_input']): {len(chunk['lang_input'])}, chunk['lang_input']: {chunk['lang_input']}")
                         continue # raise ValueError()
 
                     output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
-
-                    if self.eval:
-                        yield output
 
                     labels = output.input_ids.clone()
 
@@ -174,7 +188,7 @@ class ALFREDDataset(IterableDataset, Stateful):
                     
                     input_ids = output.input_ids[:, :-1]
                     labels = labels[:, 1:]
-
+                    
                     if self.cp_degree > 1:
                         input_ids = pad_to_multiple(input_ids, self.cp_degree * 2, pad_token=self.eos_tok_id)
                         labels = pad_to_multiple(labels, self.cp_degree * 2, pad_token=self.ignore_index)
@@ -206,23 +220,33 @@ class ALFREDDataset(IterableDataset, Stateful):
         # with S3
         filename = traj['filename'] # with S3
         traj = json.loads(traj['text'])
-        chunk_seq_list, chunk_img_idx = self.seq_preprocess(traj)
+        chunk_seq_list, chunk_img_list = self.seq_preprocess(traj)
 
         #traj_imgs = set([x['image_name'].split(".")[0] for x in traj['images']])
 
         img_tar_file = filename.replace("txt", "tar")
         tar_file = os.path.join(self.img_data_dir, img_tar_file)
 
-        img_list = extract_and_convert_tar(tar_file)
+        img_dict = extract_and_convert_tar(tar_file)
+
         chunks = []
 
-        for input_seq, (img_start, img_end) in zip(chunk_seq_list, chunk_img_idx):
-            chunks.append({
-                'lang_input': input_seq,
-                'img_list': img_list[img_start:img_end],
-                'task_goal': traj['turk_annotations']['anns'][0]['task_desc'],
-                'traj': traj,
-            })
+        if self.use_only_last_frame:
+            for input_seq, cimgs in zip(chunk_seq_list, chunk_img_list):
+                chunks.append({
+                    'lang_input': input_seq,
+                    'img_list': [img_dict[fname.replace("png", "jpg")] for fname in cimgs],
+                    'task_goal': traj['turk_annotations']['anns'][0]['task_desc'],
+                    'traj': traj,
+                })
+        else:
+            for input_seq, (img_start, img_end) in zip(chunk_seq_list, chunk_img_idx):
+                chunks.append({
+                    'lang_input': input_seq,
+                    'img_list': img_list[img_start:img_end],
+                    'task_goal': traj['turk_annotations']['anns'][0]['task_desc'],
+                    'traj': traj,
+                })
 
         return chunks
 
@@ -247,7 +271,7 @@ class ALFREDDataset(IterableDataset, Stateful):
             except Exception as e:
                 print(f"Error reading file {file_path}: {str(e)}")
 
-    def seq_preprocess(self, traj, sparse_frame=False):
+    def seq_preprocess(self, traj):
         # Prepare: low_idx_to_image
         low_idx_2_image = defaultdict(list)
         for im_info in traj['images']:
@@ -263,39 +287,52 @@ class ALFREDDataset(IterableDataset, Stateful):
             high_idx_2_low_act_list[high_idx].append(low_act)
 
         # start: make squences here
-        main_goal_str = "Your main goal: "
+        main_goal_str = "<|goal|>Your main goal: "
         if 'turk_annotations' in traj:
-            main_goal_str += traj['turk_annotations']['anns'][0]['task_desc']
+            main_goal_str += traj['turk_annotations']['anns'][0]['task_desc'] + "<|goal|>"
         # else we need to use templated desc .. later
         n_main_goal_tokens = len(self.processor(text=main_goal_str).input_ids)
 
         chunk_seq_list = []
-        chunk_img_idx = []
+        chunk_img_file_list = []
 
         chunk_seq = main_goal_str
         n_chunk_tokens = n_main_goal_tokens # for chunking
-        n_chunk_img = 0
-        img_start_idx = 0
+
+        # initial image state
+        chunk_seq += "<image>"
+        n_chunk_tokens += 1485
+        chunk_img_files = ['000000000.png']
+        n_chunk_img = 1
+        img_start_idx = 1
 
         for high_idx, low_act_list in high_idx_2_low_act_list.items():
-            plan_str = f" Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][high_idx])}"
+            plan_str = f"<|plan|>Plan: {self.get_templated_high_pddl_desc(traj['plan']['high_pddl'][high_idx])}<|plan|>"
             
             high_plan_seq = ""
             high_plan_seq += plan_str
             n_high_plan_tokens = len(self.processor(text=plan_str).input_ids)
             n_high_plan_img = 0
 
-            for low_idx, low_act in enumerate(low_act_list):
+            low_act_last_frames = []
+            #for low_idx, low_act in enumerate(low_act_list):
+            for _, low_act in enumerate(low_act_list):
+                low_idx = low_act['low_idx']
+                low_act_last_frames.append(low_idx_2_image[low_idx][-1])
                 action_str = self.serialize_action(low_act['api_action'])
                 low_act_seq = action_str
                 action_str_tok = self.processor(text=action_str).input_ids   
                 n_low_act_tokens = len(action_str_tok)
 
                 # count tokens for images
-                n_low_img = 2 if sparse_frame else len(low_idx_2_image[low_idx])
+                n_low_img = len(low_idx_2_image[low_idx])
 
-                low_act_seq += (" <image>" * n_low_img)
-                n_low_act_tokens += (1485 * n_low_img) # one frame is 1485 tokens
+                if self.use_only_last_frame:
+                    low_act_seq += ("<image>" * 1)
+                    n_low_act_tokens += (1485 * 1) # one frame is 1485 tokens
+                else:
+                    low_act_seq += ("<image>" * n_low_img)
+                    n_low_act_tokens += (1485 * n_low_img) # one frame is 1485 tokens
 
                 if (n_high_plan_tokens + n_low_act_tokens) >= self.max_seq_len:
                     break # do not add this low_act and break
@@ -308,24 +345,28 @@ class ALFREDDataset(IterableDataset, Stateful):
 
             if (n_chunk_tokens + n_high_plan_tokens) >= self.max_seq_len:
                 chunk_seq_list.append(chunk_seq)
-                chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
-
+                chunk_img_file_list.append(chunk_img_files)
+                
                 # reset for next chunk
                 chunk_seq = main_goal_str + high_plan_seq
                 n_chunk_tokens = n_main_goal_tokens + n_high_plan_tokens
                 img_start_idx = img_start_idx + n_chunk_img
                 n_chunk_img = n_high_plan_img
+                chunk_img_files = low_act_last_frames
             else:
                 chunk_seq += high_plan_seq
                 n_chunk_tokens += n_high_plan_tokens
                 n_chunk_img += n_high_plan_img
+                chunk_img_files.extend(low_act_last_frames)
 
         chunk_seq_list.append(chunk_seq)
-        chunk_img_idx.append([img_start_idx, img_start_idx + n_chunk_img])
+        chunk_img_file_list.append(chunk_img_files)
 
-        logger.info(f"# of chunks: {len(chunk_seq_list)}, chunk_img_idx: {chunk_img_idx}")
+        if self.use_only_last_frame:
+            assert len(chunk_seq_list) == len(chunk_img_file_list)
+        #logger.info(f"# of chunks: {len(chunk_seq_list)}, chunk_img_file_list: {chunk_img_file_list[-1]}")
 
-        return chunk_seq_list, chunk_img_idx
+        return chunk_seq_list, chunk_img_file_list
 
     def serialize_action(self, act):
         template = self.act_template[act['action']]

@@ -142,7 +142,7 @@ def main(job_config: JobConfig):
         tokenizer = processor.tokenizer
         traj_data_dir = os.environ['TRAJ_DATA_DIR'] 
         img_data_dir = os.environ['IMG_DATA_DIR']
-        processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
+        processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
         
         # TODO incorporate with build_hf_data_loader
         from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
