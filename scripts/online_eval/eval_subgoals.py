@@ -179,7 +179,7 @@ class EvalSubgoals():
         return [sg['high_idx'] for sg in traj['plan']['high_pddl'] if sg['discrete_action']['action'] in self.subgoals_to_evaluate]
 
     @classmethod
-    def setup_scene(cls, client, traj, reward_type='dense'):
+    def setup_scene(cls, env, traj, reward_type='dense'):
         '''
         intialize the scene and agent from the task info
         '''
@@ -190,32 +190,19 @@ class EvalSubgoals():
         object_toggles = traj['scene']['object_toggles']
 
         scene_name = 'FloorPlan%d' % scene_num
-        #last_event = env.reset(scene_name)
-        last_event = client.initialize(scene=scene_name)
-
-        #last_event = env.restore_scene()
-        if len(object_toggles) > 0:
-            client.interact({"action": dict(action='SetObjectToggles', objectToggles=object_toggles)})
-
-        if dirty_and_empty:
-            client.interact({"action": dict(action='SetStateOfAllObjects',
-                                            StateChange="CanBeDirty",
-                                            forceAction=True)})
-            client.interact({"action": dict(action='SetStateOfAllObjects',
-                                            StateChange="CanBeFilled",
-                                            forceAction=False)})
-        last_event = client.interact({"action": {"action": 'SetObjectPoses',"objectPoses": object_poses}})
+        last_event = env.reset(scene_name)
+        last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
 
         # initialize to start position
-        last_event = client.interact({"action": dict(traj['scene']['init_action'])})
+        last_event = env.step(dict(traj['scene']['init_action']))
         
         # setup task for reward
-        client.set_task(traj, last_event, reward_type=reward_type)
+        env.set_task(traj, last_event, reward_type=reward_type)
 
         logger.info(f"Setup scene: {scene_name} Task: {traj['task_type']} {traj['pddl_params']}")
         return last_event
 
-    def simulate_with_expert(self, client, traj_data, eval_idx, teacher_forcing=True, max_steps=2000):
+    def simulate_with_expert(self, env, traj_data, eval_idx, teacher_forcing=True, max_steps=2000):
         # expert demonstration to reach eval_idx-1
         #expert_init_actions = [a['discrete_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
         self.expert_init_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < eval_idx]
@@ -237,7 +224,7 @@ class EvalSubgoals():
 
         # setup scene
         reward_type = 'dense'
-        last_event = self.setup_scene(client, traj_data, reward_type=reward_type)
+        last_event = self.setup_scene(env, traj_data, reward_type=reward_type)
         if not last_event['lastActionSuccess']:
             logger.info(f"ERROR - Initialization fail !")
             return False
@@ -271,7 +258,7 @@ class EvalSubgoals():
             if action['action'] in ['ToggleObjectOn', 'ToggleObjectOff']:
                 action['forceAction'] = True
 
-            last_event = client.interact({"action": action})
+            last_event = env.step(action)
 
             if not last_event['lastActionSuccess']:
                 if not (last_event['lastAction'] in ["LookDown", "LookUp"]):
@@ -296,10 +283,10 @@ class EvalSubgoals():
             #         self.prefix += ' <image>'
             
             # update transition reward
-            _ = client.env.get_transition_reward(last_event)
+            _ = env.get_transition_reward(last_event)
 
         # Done with expert actions
-        finished = client.env.get_subgoal_idx()
+        finished = env.get_subgoal_idx()
 
         if len(self.expert_init_actions) > 0:
             curr_high_idx += 1
@@ -320,26 +307,26 @@ class EvalSubgoals():
         
         return True
 
-    def interact_with_env(self, client, action, eval_idx):
+    def interact_with_env(self, env, action, eval_idx):
         smooth_events = None
         subgoal_success = False
         try:
             # convert act to api_action
             if 'Object' in action:
-                _action, obj_id = post_processing_action(action, client.env.last_event['objects'])
+                _action, obj_id = post_processing_action(action, env.last_event['objects'])
                 if 'PutObject' in action and obj_id:
-                    inventory_object_id = client.env.last_event['inventoryObjects'][0]['objectId']
+                    inventory_object_id = env.last_event['inventoryObjects'][0]['objectId']
                     put_action = dict(action="PutObject",
                                 objectId=inventory_object_id,
                                 receptacleObjectId=obj_id,
                                 forceAction=True,
                                 placeStationary=True)
-                    last_event = client.interact({"action": put_action})
+                    last_egent = env.step(put_action)
                 elif obj_id:
-                    last_event = client.interact({"action": dict(action=_action, objectId=obj_id, forceAction=True)})
+                    last_event = env.step(dict(action=_action, objectId=obj_id, forceAction=True))
             else:
                 #last_event, smooth_events = env.step(dict(action=action, forceAction=True), smooth_nav=True)
-                last_event = client.interact({"action": dict(action=action, forceAction=True)})
+                last_event = env.step(dict(action=action, forceAction=True))
 
             t_success = last_event['lastActionSuccess']
         except:
@@ -350,14 +337,8 @@ class EvalSubgoals():
             return t_success, subgoal_success
 
         self.prefix += action + '<|act|>'
-
-        # if smooth_events:
-        #     for se in smooth_events:
-        #         self.prefix += ' <image>'
-        #         _image = Image.fromarray(np.uint8(se.frame))
-        #         self.img_list.append(_image)
-        # else:
         self.prefix += '<image>'
+
         buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
         buffer.seek(0)
         _image = Image.open(buffer)
@@ -365,12 +346,12 @@ class EvalSubgoals():
 
         # next time-step
         # t_done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
-        t_reward, t_done, sg_done = client.env.get_transition_reward(last_event) # type: (float, bool)
+        t_reward, t_done, sg_done = env.get_transition_reward(last_event) # type: (float, bool)
 
-        logger.info(f"t: {self.t}, t_done: {t_done}, sg_done: {sg_done} || Pred: {action}, success: {t_success}, Finished: {client.env.get_subgoal_idx()}")
+        logger.info(f"t: {self.t}, t_done: {t_done}, sg_done: {sg_done} || Pred: {action}, success: {t_success}, Finished: {env.get_subgoal_idx()}")
 
         # update subgoals
-        finished = client.env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
+        finished = env.get_subgoal_idx() # get_subgoal_idx returns self.task.finished
         # curr_subgoal_idx = finished + 1
         if finished == eval_idx:
             subgoal_success = True

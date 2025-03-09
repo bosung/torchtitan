@@ -5,19 +5,17 @@ import argparse
 from env_utils.env.tasks import get_task
 import env_utils.gen.constants as constants
 
+from torchtitan.logging import logger
+
 class ThorEnv():
     '''
-    an extension of ai2thor.controller.Controller for ALFRED tasks
+    Environment class that interacts with ai2thor.controller.Controller
+    over HTTP. Includes extension codes for ALFRED tasks.
+    adopted by: https://github.com/askforalfred/alfred/blob/master/env/thor_env.py
     '''
     def __init__(self):
-        #super().__init__(quality=quality)
-        # controller = ai2thor.controller.Controller(platform=ai2thor.platform.CloudRendering, scene='FloorPlan28')
-        #super().__init__(platform=ai2thor.platform.CloudRendering)
-        # self.local_executable_path = build_path
-        # self.start(x_display=x_display,
-        #            height=player_screen_height,
-        #            width=player_screen_width)
         self.task = None
+        self.last_event = None
 
         # internal states
         self.cleaned_objects = set()
@@ -27,6 +25,8 @@ class ThorEnv():
         # intemediate states for CoolObject Subgoal
         self.cooled_reward = False
         self.reopen_reward = False
+
+        self.client = AI2THORClient()
 
         print("ThorEnv started.")
 
@@ -48,8 +48,9 @@ class ThorEnv():
         else:
             scene_name = 'FloorPlan%d' % scene_name_or_num
 
-        super().reset(scene_name)
-        event = super().step(dict(
+        event = self.client.initialize(scene_name) # controller.reset
+
+        event = self.step(dict(
             action='Initialize',
             gridSize=grid_size,
             cameraY=camera_y,
@@ -61,9 +62,7 @@ class ThorEnv():
             makeAgentsVisible=False,
         ))
 
-        # reset task if specified
-        # TODO ai2thor migration
-        if hasattr(self, "task") and self.task is not None:
+        if self.task is not None:
             self.task.reset()
 
         # clear object state changes
@@ -83,7 +82,7 @@ class ThorEnv():
         '''
         restore object locations and states
         '''
-        super().step(dict(
+        self.step(dict(
             action='Initialize',
             gridSize=constants.AGENT_STEP_SIZE / constants.RECORD_SMOOTHING_FACTOR,
             cameraY=constants.CAMERA_HEIGHT_OFFSET,
@@ -94,18 +93,19 @@ class ThorEnv():
             visibility_distance=constants.VISIBILITY_DISTANCE,
             makeAgentsVisible=False,
         ))
-        # if len(object_toggles) > 0:
-        #     super().step((dict(action='SetObjectToggles', objectToggles=object_toggles)))
 
-        # if dirty_and_empty:
-        #     super().step(dict(action='SetStateOfAllObjects',
-        #                        StateChange="CanBeDirty",
-        #                        forceAction=True))
-        #     super().step(dict(action='SetStateOfAllObjects',
-        #                        StateChange="CanBeFilled",
-        #                        forceAction=False))
+        if len(object_toggles) > 0:
+            self.step((dict(action='SetObjectToggles', objectToggles=object_toggles)))
 
-        last_event = super().step((dict(action='SetObjectPoses', objectPoses=object_poses)))
+        if dirty_and_empty:
+            self.step(dict(action='SetStateOfAllObjects',
+                               StateChange="CanBeDirty",
+                               forceAction=True))
+            self.step(dict(action='SetStateOfAllObjects',
+                               StateChange="CanBeFilled",
+                               forceAction=False))
+
+        last_event = self.step((dict(action='SetObjectPoses', objectPoses=object_poses)))
         return last_event
 
     def set_task(self, traj, last_event, reward_type='sparse', max_episode_length=2000):
@@ -114,38 +114,13 @@ class ThorEnv():
         '''
         task_type = traj['task_type']
         self.task = get_task(task_type, traj, last_event, reward_type=reward_type, max_episode_length=max_episode_length)
-    '''
-    def step(self, action, smooth_nav=False, quality=None, raise_for_failure=False):
 
-        # overrides ai2thor.controller.Controller.step() for smooth navigation and goal_condition updates
-
-        if smooth_nav:
-            smooth_events = None
-            if "MoveAhead" in action['action']:
-                smooth_events = self.smooth_move_ahead(action)
-            elif "Rotate" in action['action']:
-                smooth_events = self.smooth_rotate(action)
-            elif "Look" in action['action']:
-                smooth_events = self.smooth_look(action)
-            else:
-                super().step(action)
-        else:
-            #if "LookUp" in action['action']: # for ai2thor==5.0.0
-            if "LookUp" in action:
-                self.look_angle(-constants.AGENT_HORIZON_ADJ)
-            elif "LookDown" in action:
-                self.look_angle(constants.AGENT_HORIZON_ADJ)
-            elif "ChangeQuality" in action:
-                super().step(action, quality=quality)
-            else:
-                super().step(action)
-
-        event = self.update_states(action)
+    def step(self, action: dict):
+        last_event = self.client.interact(action)
+        self.last_event = self.update_states(action, last_event)
         self.check_post_conditions(action)
-        if smooth_nav:
-            return event, smooth_events
-        return event
-    '''
+        return self.last_event
+
     def check_post_conditions(self, action):
         '''
         handle special action post-conditions
@@ -225,11 +200,11 @@ class ThorEnv():
 
         events = []
         for xx in range(smoothing_factor - 1):
-            event = super().step(new_action)
+            event = self.step(new_action)
             if event.metadata['lastActionSuccess']:
                 events.append(event)
 
-        event = super().step(new_action)
+        event = self.step(new_action)
         if event.metadata['lastActionSuccess']:
             events.append(event)
         return events
@@ -268,7 +243,7 @@ class ThorEnv():
                     # 'renderObjectImage': render_settings['renderObjectImage'],
                     # 'renderDepthImage': render_settings['renderDepthImage'],
                 }
-                event = super().step(teleport_action)
+                event = self.step(teleport_action)
             else:
                 teleport_action = {
                     'action': 'TeleportFull',
@@ -279,7 +254,7 @@ class ThorEnv():
                     'horizon': horizon,
                     'standing': True
                 }
-                event = super().step(teleport_action)
+                event = self.step(teleport_action)
 
             if event.metadata['lastActionSuccess']:
                 events.append(event)
@@ -326,7 +301,7 @@ class ThorEnv():
                     'horizon': np.round(start_horizon * (1 - xx) + end_horizon * xx, 3),
                     'standing': True
                 }
-                event = super().step(teleport_action)
+                event = self.step(teleport_action)
 
             if event.metadata['lastActionSuccess']:
                 events.append(event)
@@ -388,7 +363,7 @@ class ThorEnv():
             'renderObjectImage': render_settings['renderObjectImage'],
             'renderDepthImage': render_settings['renderDepthImage'],
         }
-        event = super().step(teleport_action)
+        event = self.step(teleport_action)
         return event
 
     def to_thor_api_exec(self, action, object_id="", smooth_nav=False):
@@ -466,13 +441,13 @@ class ThorEnv():
         basin. This is to clean everything in the sink rather than just things touching the stream.
         '''
         event = self.last_event
-        if event.metadata['lastActionSuccess'] and 'Faucet' in object_id:
+        if event['lastActionSuccess'] and 'Faucet' in object_id:
             # Need to delay one frame to let `isDirty` update on stream-affected.
             event = self.step({'action': 'Pass'})
-            sink_basin_obj = game_util.get_obj_of_type_closest_to_obj("SinkBasin", object_id, event.metadata)
+            sink_basin_obj = game_util.get_obj_of_type_closest_to_obj("SinkBasin", object_id, event)
             for in_sink_obj_id in sink_basin_obj['receptacleObjectIds']:
-                if (game_util.get_object(in_sink_obj_id, event.metadata)['dirtyable']
-                        and game_util.get_object(in_sink_obj_id, event.metadata)['isDirty']):
+                if (game_util.get_object(in_sink_obj_id, event)['dirtyable']
+                        and game_util.get_object(in_sink_obj_id, event)['isDirty']):
                     event = self.step({'action': 'CleanObject', 'objectId': in_sink_obj_id})
         return event
 
@@ -489,121 +464,12 @@ class ThorEnv():
 
         ordered_instance_ids = [id for id in instances_ids if id in pruned_instance_ids]
         return ordered_instance_ids
-    '''
-    def va_interact(self, action, interact_mask=None, smooth_nav=True, mask_px_sample=1, debug=False):
 
-        # interact mask based action call
-
-        all_ids = []
-
-        if type(interact_mask) is str and interact_mask == "NULL":
-            raise Exception("NULL mask.")
-        elif interact_mask is not None:
-            # ground-truth instance segmentation mask from THOR
-            instance_segs = np.array(self.last_event.instance_segmentation_frame)
-            color_to_object_id = self.last_event.color_to_object_id
-
-            # get object_id for each 1-pixel in the interact_mask
-            nz_rows, nz_cols = np.nonzero(interact_mask)
-            instance_counter = Counter()
-            for i in range(0, len(nz_rows), mask_px_sample):
-                x, y = nz_rows[i], nz_cols[i]
-                instance = tuple(instance_segs[x, y])
-                instance_counter[instance] += 1
-            if debug:
-                print("action_box", "instance_counter", instance_counter)
-
-            # iou scores for all instances
-            iou_scores = {}
-            for color_id, intersection_count in instance_counter.most_common():
-                union_count = np.sum(np.logical_or(np.all(instance_segs == color_id, axis=2), interact_mask.astype(bool)))
-                iou_scores[color_id] = intersection_count / float(union_count)
-            iou_sorted_instance_ids = list(OrderedDict(sorted(iou_scores.items(), key=lambda x: x[1], reverse=True)))
-
-            # get the most common object ids ignoring the object-in-hand
-            inv_obj = self.last_event.metadata['inventoryObjects'][0]['objectId'] \
-                if len(self.last_event.metadata['inventoryObjects']) > 0 else None
-            all_ids = [color_to_object_id[color_id] for color_id in iou_sorted_instance_ids
-                       if color_id in color_to_object_id and color_to_object_id[color_id] != inv_obj]
-
-            # print all ids
-            if debug:
-                print("action_box", "all_ids", all_ids)
-
-            # print instance_ids
-            instance_ids = [inst_id for inst_id in all_ids if inst_id is not None]
-            if debug:
-                print("action_box", "instance_ids", instance_ids)
-
-            # prune invalid instances like floors, walls, etc.
-            instance_ids = self.prune_by_any_interaction(instance_ids)
-
-            # cv2 imshows to show image, segmentation mask, interact mask
-            if debug:
-                print("action_box", "instance_ids", instance_ids)
-                instance_seg = copy.copy(instance_segs)
-                instance_seg[:, :, :] = interact_mask[:, :, np.newaxis] == 1
-                instance_seg *= 255
-
-                cv2.imshow('seg', instance_segs)
-                cv2.imshow('mask', instance_seg)
-                cv2.imshow('full', self.last_event.frame[:,:,::-1])
-                cv2.waitKey(0)
-
-            if len(instance_ids) == 0:
-                err = "Bad interact mask. Couldn't locate target object"
-                success = False
-                return success, None, None, err, None
-
-            target_instance_id = instance_ids[0]
-        else:
-            target_instance_id = ""
-        
-        # if debug:
-        #     print("taking action: " + str(action) + " on target_instance_id " + str(target_instance_id))
-        print("taking action: " + str(action) + " on target_instance_id " + str(target_instance_id))
-        try:
-            event, api_action = self.to_thor_api_exec(action, target_instance_id, smooth_nav)
-        except Exception as err:
-            success = False
-            return success, None, None, err, None
-
-        if not event.metadata['lastActionSuccess']:
-            if interact_mask is not None and debug:
-                print("Failed to execute action!", action, target_instance_id)
-                print("all_ids inside BBox: " + str(all_ids))
-                instance_seg = copy.copy(instance_segs)
-                instance_seg[:, :, :] = interact_mask[:, :, np.newaxis] == 1
-                cv2.imshow('seg', instance_segs)
-                cv2.imshow('mask', instance_seg)
-                cv2.imshow('full', self.last_event.frame[:,:,::-1])
-                cv2.waitKey(0)
-                print(event.metadata['errorMessage'])
-            success = False
-            return success, event, target_instance_id, event.metadata['errorMessage'], api_action
-
-        success = True
-        return success, event, target_instance_id, '', api_action
-
-    @staticmethod
-    def bbox_to_mask(bbox):
-        return image_util.bbox_to_mask(bbox)
-
-    @staticmethod
-    def point_to_mask(point):
-        return image_util.point_to_mask(point)
-
-    @staticmethod
-    def decompress_mask(compressed_mask):
-        return image_util.decompress_mask(compressed_mask)
-    '''
 
 class AI2THORClient:
     def __init__(self, service_url="http://localhost:5000"):
         self.service_url = service_url
         self.check_service()
-        self.env = ThorEnv()
-        self.last_event = None
     
     def check_service(self):
         """Check if the AI2THOR service is running"""
@@ -631,14 +497,4 @@ class AI2THORClient:
             f"{self.service_url}/interact",
             json={"action": action}
         )
-        last_event = response.json()
-        self.env.last_event = last_event
-        self.env.last_event = self.env.update_states(action, last_event)
-        self.env.check_post_conditions(action)
-        return self.env.last_event
-
-    # def get_transition_reward(self, last_event):
-    #     return self.env.get_transition_reward(last_event)
-
-    def set_task(self, traj, last_event, reward_type):
-        self.env.set_task(traj, last_event, reward_type)
+        return response.json()

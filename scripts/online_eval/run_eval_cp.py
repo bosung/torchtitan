@@ -49,7 +49,7 @@ import gc
 
 #from env_utils.env.thor_env import ThorEnv
 
-from ai2thor_client import AI2THORClient
+from ai2thor_client import ThorEnv
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -224,7 +224,7 @@ def main(
     dataset = ALFREDDataset(
         processor=processor,
         traj_data_dir=os.environ['TRAJ_DATA_DIR'],
-        cp_degree=1,
+        cp_degree=cp_degree,
         eval=True)
 
     eval_done_idx = check_existing_evals(s3_path=AWS_S3_PATH)
@@ -270,10 +270,9 @@ def main(
     pad_tok_id = processor.tokenizer.pad_token_id
 
     if dist.get_rank() == 0:
-        #env = ThorEnv()
-        client = AI2THORClient()
+        env = ThorEnv()
     else:
-        client = None
+        env = None
     
     from eval_subgoals import EvalSubgoals
     eval_subgoals = EvalSubgoals()
@@ -281,9 +280,9 @@ def main(
     sim_fail_cnt = 0
     for j, batch in enumerate(dataset):
         test_id = j
-        if j <= eval_done_idx:
-            continue
-        if j == 10:
+        # if j <= eval_done_idx:
+        #     continue
+        if j == 1:
             break
         
         traj = batch
@@ -292,7 +291,7 @@ def main(
 
         for eval_idx in subgoal_idxs:
             if dist.get_rank() == 0:
-                sim_success = eval_subgoals.simulate_with_expert(client, traj, eval_idx)
+                sim_success = eval_subgoals.simulate_with_expert(env, traj, eval_idx)
             else:
                 sim_success = False
 
@@ -301,6 +300,7 @@ def main(
             sim_success = bool(sim_success_tensor.item())
             logger.info(f"Test id {j} -- Expert replay success: {sim_success}")
             dist.barrier()
+
             if not sim_success:
                 break # if expert traj fails, even next subgoal cannot make it
 
@@ -321,7 +321,7 @@ def main(
                 if dist.get_rank() == 0:
                     output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
                     logger.info(f"{color.blue}{output_text}\n{color.reset}")
-                    success, done = eval_subgoals.interact_with_env(client, output_text, eval_idx)
+                    success, done = eval_subgoals.interact_with_env(env, output_text, eval_idx)
                 else:
                     success, done = None, None
 
@@ -352,13 +352,12 @@ def main(
                 metrics = eval_subgoals.update_metrics(traj, eval_idx, done, test_id=j)
             else:
                 logger.info(f"Rank: {dist.get_rank()} -- waiting for update_metrics ... ")
-
-        if dist.get_rank() == 0:
-            metric_logger.log(metrics, step=j)
-            metric_logger.log(eval_subgoals.results, step=j)
-            eval_subgoals.sync_metrics_s3(AWS_S3_PATH, test_id)
-        else:
-            logger.info(f"Rank: {dist.get_rank()} -- waiting for S3 sync ... ")
+        # if dist.get_rank() == 0:
+        #     metric_logger.log(metrics, step=j)
+        #     metric_logger.log(eval_subgoals.results, step=j)
+        #     eval_subgoals.sync_metrics_s3(AWS_S3_PATH, test_id)
+        # else:
+        #     logger.info(f"Rank: {dist.get_rank()} -- waiting for S3 sync ... ")
     
 
 @torch.no_grad()
@@ -368,7 +367,8 @@ def generate(model, input_ids, pixel_values, config, device, cp_degree, world_me
     n_image =  torch.tensor([[pixel_values.shape[0]]], device=pixel_values.device)
     
     seq_len = input_ids.shape[1]
-    pad_size = max(max_new_tokens, (cp_degree * 2) - (seq_len % (cp_degree * 2)))
+    #pad_size = max(max_new_tokens, (cp_degree * 2) - (seq_len % (cp_degree * 2)))
+    pad_size = (cp_degree * 2) - (seq_len % (cp_degree * 2))
 
     if pad_size > 0:
         pad_token_tensors = torch.tensor([pad_tok_id] * pad_size, device=device)[None, :]
@@ -390,11 +390,13 @@ def generate(model, input_ids, pixel_values, config, device, cp_degree, world_me
     new_tokens = []
     for i in range(max_new_tokens):
         seq_len = inputs_embeds.shape[1]
-        max_seq = (seq_len // ((cp_degree * 2))) * (cp_degree * 2)
-        inputs_embeds = inputs_embeds[:, -max_seq:, :]
-
         position_ids = torch.arange(0, inputs_embeds.shape[1], device=inputs_embeds.device)
         position_ids = position_ids.unsqueeze(0)
+
+        max_seq = (seq_len // ((cp_degree * 2))) * (cp_degree * 2)
+        
+        inputs_embeds = inputs_embeds[:, -max_seq:, :]
+        position_ids = position_ids[:, -max_seq:] 
 
         context_parallel_ctx = (
             utils.create_context_parallel_ctx(
@@ -417,6 +419,7 @@ def generate(model, input_ids, pixel_values, config, device, cp_degree, world_me
 
         new_token, _ = sample(logits, need_probs=True, temperature=1.0)
         del logits
+        logger.info(f"Rank: {dist.get_rank()},  new_token: {new_token.item()}")
 
         if dist.get_rank() == 0 and new_token.item() == act_tok_id:
             end_of_act = True

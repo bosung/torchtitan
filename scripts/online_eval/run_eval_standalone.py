@@ -48,8 +48,7 @@ from huggingface_hub import snapshot_download
 import gc
 
 #from env_utils.env.thor_env import ThorEnv
-
-from ai2thor_client import AI2THORClient
+from ai2thor_client import ThorEnv
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -241,14 +240,14 @@ def main(
     # model
     #init_device = "cuda"
     #with torch.device("cuda"):
-    model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, device_map="auto")
+    model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, device_map="auto", low_cpu_mem_usage=True)
         
     init_device = device_type
-    print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
+    #print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
     #model.to_empty(device=init_device)
     state_dict = {"model": model.state_dict()}
     dcp.load(state_dict, checkpoint_id=checkpoint_path)
-    print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
+    #print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
     #for name, buffer in buffers_dict.items():
     #    set_nested_attr(model, name, buffer)
 
@@ -270,7 +269,7 @@ def main(
     act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
     pad_tok_id = processor.tokenizer.pad_token_id
 
-    client = AI2THORClient()
+    env = ThorEnv()
     
     from eval_subgoals import EvalSubgoals
     eval_subgoals = EvalSubgoals()
@@ -280,7 +279,7 @@ def main(
         test_id = j
         # if j <= eval_done_idx:
         #     continue
-        if j == 5:
+        if j == 1:
             break
         
         traj = batch
@@ -289,7 +288,7 @@ def main(
 
         for eval_idx in subgoal_idxs:
 
-            sim_success = eval_subgoals.simulate_with_expert(client, traj, eval_idx)
+            sim_success = eval_subgoals.simulate_with_expert(env, traj, eval_idx)
 
             if not sim_success:
                 break # if expert traj fails, even next subgoal cannot make it
@@ -304,7 +303,7 @@ def main(
 
                 output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
                 logger.info(f"{color.blue}{output_text}\n{color.reset}")
-                success, done = eval_subgoals.interact_with_env(client, output_text, eval_idx)
+                success, done = eval_subgoals.interact_with_env(env, output_text, eval_idx)
 
                 if (not success) or done:
                     break
@@ -312,7 +311,6 @@ def main(
                 input_ids, pixel_values = eval_subgoals.process_input(processor)
 
             metrics = eval_subgoals.update_metrics(traj, eval_idx, done, test_id=j)
-
         # metric_logger.log(metrics, step=j)
         # metric_logger.log(eval_subgoals.results, step=j)
         # eval_subgoals.sync_metrics_s3(AWS_S3_PATH, test_id)

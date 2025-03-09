@@ -50,11 +50,7 @@ def interact():
     
     try:
         # Extract action and parameters
-        action_name = action.get('action')
-        params = {k: v for k, v in action.items() if k != 'action'}
-        
-        # Execute the action
-        event = controller.step(action=action_name, **params)
+        event = controller.step(action)
 
         image = Image.fromarray(np.uint8(event.frame), mode='RGB')
     
@@ -89,6 +85,7 @@ def interact():
             ],
             "inventoryObjects": event.metadata.get('inventoryObjects', []),
             "frame_bytes": img_str,
+            "pose_discrete": event.pose_discrete,
         }
         
         return jsonify(response)
