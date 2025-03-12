@@ -108,18 +108,65 @@ class ThorEnv():
         last_event = self.step((dict(action='SetObjectPoses', objectPoses=object_poses)))
         return last_event
 
-    def set_task(self, traj, last_event, reward_type='sparse', max_episode_length=2000):
+    def set_task(self, traj, last_event, sub_traj_idx=None, task_info=None, task_type=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
         '''
         set the current task type (one of 7 tasks)
         '''
-        task_type = traj['task_type']
-        self.task = get_task(task_type, traj, last_event, reward_type=reward_type, max_episode_length=max_episode_length)
+        if not task_type:
+            if 'long_horizon_task' in traj:
+                task_type = traj['long_horizon_task']['task_info']['goal']
+            else:
+                task_type = traj['taks_type']
+        
+        self.task = get_task(task_type, traj,
+                    last_event,
+                    sub_traj_idx=sub_traj_idx,
+                    task_info=task_info,
+                    num_subgoals=num_subgoals,
+                    reward_type=reward_type,
+                    max_episode_length=max_episode_length)
 
     def step(self, action: dict):
         last_event = self.client.interact(action)
         self.last_event = self.update_states(action, last_event)
         self.check_post_conditions(action)
         return self.last_event
+
+    def restore_agent_last_state(self, expert):
+        last_state = expert.last_event
+
+        # if len(object_toggles) > 0:
+        #     self.step((dict(action='SetObjectToggles', objectToggles=object_toggles)))
+
+        # if dirty_and_empty:
+        #     self.step(dict(action='SetStateOfAllObjects',
+        #                        StateChange="CanBeDirty",
+        #                        forceAction=True))
+        #     self.step(dict(action='SetStateOfAllObjects',
+        #                        StateChange="CanBeFilled",
+        #                        forceAction=False))
+        object_poses = [{'objectName': obj['name'], 
+                        'position': obj['position'],
+                        'rotation': obj['rotation']}
+                        for obj in last_state['objects']]
+
+        last_event = self.step((dict(action='SetObjectPoses', objectPoses=object_poses)))
+
+        self.cleaned_objects = last_state['env_state']['cleaned_objects']
+        self.cooled_objects = last_state['env_state']['cooled_objects']
+        self.heated_objects = last_state['env_state']['heated_objects']
+
+        last_event = self.step({'action': 'TeleportFull',
+                    'x': last_state['agent']['position']['x'],
+                    'y': last_state['agent']['position']['y'],
+                    'z': last_state['agent']['position']['z'],
+                    'rotation': last_state['agent']['rotation']['y'],
+                    'rotateOnTeleport': True,
+                    'horizon': last_state['agent']['cameraHorizon']})
+
+        expert.last_state = last_event
+        return last_event
+
 
     def check_post_conditions(self, action):
         '''
@@ -151,13 +198,19 @@ class ThorEnv():
                 cooled_object_ids = fridge['receptacleObjectIds']
                 self.cooled_objects = self.cooled_objects | set(cooled_object_ids) if cooled_object_ids is not None else set()
 
+        event['env_state'] = {
+            "cleaned_objects": self.cleaned_objects,
+            "cooled_objects": self.cooled_objects,
+            "heated_objects": self.heated_objects,
+        }
+
         return event
 
-    def get_transition_reward(self, last_event):
+    def get_transition_reward(self, last_event, eval_idx=None, expert=False):
         if self.task is None:
             raise Exception("WARNING: no task setup for transition_reward")
         else:
-            return self.task.transition_reward(last_event, self)
+            return self.task.transition_reward(last_event, self, eval_idx, expert)
 
     def get_goal_satisfied(self):
         if self.task is None:

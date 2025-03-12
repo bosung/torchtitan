@@ -1,4 +1,5 @@
-from env_utils.gen.utils.game_util import get_object
+from env_utils.gen.utils.game_util import get_object, get_objects_with_name_and_prop
+import numpy as np
 
 REWARD_MAP = {
     "Generic":
@@ -88,6 +89,17 @@ REWARD_MAP = {
     }
   }
 
+
+def is_eq_obj_ids(objA, objB):
+    name_a, x_a, y_a, z_a = objA.split("|")[:4]
+    name_b, x_b, y_b, z_b = objB.split("|")[:4]
+
+    if name_a != name_b:
+        return False
+    if np.linalg.norm(np.array([float(x_a), float(y_a), float(z_a)]) - np.array([float(x_b), float(y_b), float(z_b)])) > 0.1:
+        return False
+    return True
+
 class BaseAction(object):
     '''
     base class for API actions
@@ -158,17 +170,17 @@ class PickupObjectAction(BaseAction):
         reward, done = self.rewards['neutral'], False
         inventory_objects = state['inventoryObjects']
         if len(inventory_objects):
-            inv_object_id = state['inventoryObjects'][0]['objectId']
-            goal_object_id = subgoal['objectId']
+            inv_object = state['inventoryObjects'][0]['objectId'].split("|")[0]
+            goal_object = subgoal['objectId'].split("|")[0]
 
             # doesn't matter which slice you pick up
             def remove_slice_postfix(object_id):
                 return object_id.split("Sliced")[0]
 
-            inv_object_id = remove_slice_postfix(inv_object_id)
-            goal_object_id = remove_slice_postfix(goal_object_id)
+            inv_object = remove_slice_postfix(inv_object)
+            goal_object = remove_slice_postfix(goal_object)
 
-            reward, done = (self.rewards['positive'], True) if inv_object_id == goal_object_id else (self.rewards['negative'], False)
+            reward, done = (self.rewards['positive'], True) if inv_object == goal_object else (self.rewards['negative'], False)
         return reward, done
 
 
@@ -178,6 +190,7 @@ class PutObjectAction(BaseAction):
     '''
 
     valid_actions = {'PutObject', 'OpenObject', 'CloseObject'}
+    target_object_id = None
 
     def get_reward(self, state, prev_state, expert_plan, goal_idx):
         if state['lastAction'] not in self.valid_actions:
@@ -185,12 +198,36 @@ class PutObjectAction(BaseAction):
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
-        reward, done = self.rewards['neutral'], False
-        target_object_id = subgoal['objectId']
-        recep_object = get_object(subgoal['receptacleObjectId'], state)
-        if recep_object is not None:
-            is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
-            reward, done = (self.rewards['positive'], True) if is_target_in_recep else (self.rewards['negative'], False)
+
+        #reward, done = self.rewards['neutral'], False
+        reward, done = self.rewards['negative'], False
+        
+        if 'objectId' in subgoal:
+            target_object_id = subgoal['objectId']
+            recep_object = get_object(subgoal['receptacleObjectId'], state)
+            if recep_object is not None:
+                is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
+                reward, done = (self.rewards['positive'], True) if is_target_in_recep else (self.rewards['negative'], False)
+        # synthetic task case - synthetic task has no objectId in subgoal
+        elif state['lastAction'] == "OpenObject":
+            self.target_object_id = state['inventoryObjects'][0]['objectId']
+            return (self.rewards['positive'], True)
+        elif state['lastAction'] == "PutObject" and len(state['inventoryObjects']) == 0:
+            return self.rewards['positive'], True
+        else:
+            if not self.target_object_id:
+                self.target_object_id = state['inventoryObjects'][0]['objectId']
+            
+            recep_objname = expert_plan[goal_idx]['discrete_action']['args'][1]
+            recep_object = get_objects_with_name_and_prop(recep_objname, 'receptacle', state['objects'])
+
+            if len(recep_object) > 0:
+                for ro in recep_object:
+                    if len(ro['receptacleObjectIds']) == 0:
+                        continue
+                    if self.target_object_id in ro['receptacleObjectIds']:
+                        return (self.rewards['positive'], True)
+
         return reward, done
 
 

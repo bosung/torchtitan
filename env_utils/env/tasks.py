@@ -11,14 +11,35 @@ class BaseTask(object):
     base class for tasks
     '''
 
-    def __init__(self, traj, last_event, reward_type='sparse', max_episode_length=2000):
+    def __init__(self, traj, last_event,
+                sub_traj_idx=None,
+                task_type=None, task_info=None,
+                num_subgoals=None, 
+                reward_type='dense', max_episode_length=2000):
         # settings
         self.traj = traj
-        self.task_type = self.traj['task_type']
+
+        self.task_info = task_info
+
+        if task_type:
+            self.task_type = task_type
+        else:
+            self.task_type = self.traj['task_type']
+
         self.max_episode_length = max_episode_length
         self.reward_type = reward_type
         self.step_num = 0
-        self.num_subgoals = self.get_num_subgoals(self.traj['plan']['high_pddl']) 
+        if num_subgoals and sub_traj_idx:
+            self.num_subgoals = num_subgoals
+            high_pddl_start, high_pddl_end = self.traj['sub_trajs'][sub_traj_idx]['high_pddl_idx']
+            self.expert_plan = [x for x in self.traj['plan']['high_pddl'][high_pddl_start:high_pddl_end]]
+        else:
+            self.num_subgoals = self.get_num_subgoals(self.traj['plan']['high_pddl'])
+            self.expert_plan = self.traj['plan']['high_pddl']
+
+        # expert_plan = self.traj['plan']['high_pddl']
+        # action_type = expert_plan[self.goal_idx]['planner_action']['action']
+        
         self.goal_finished = False
 
         # internal states
@@ -74,7 +95,7 @@ class BaseTask(object):
         '''
         raise NotImplementedError
 
-    def transition_reward(self, state, env):
+    def transition_reward(self, state, env, target_goal_idx=None, expert=False):
         '''
         immediate reward given the current state
         '''
@@ -82,21 +103,24 @@ class BaseTask(object):
         # goal completed
         if self.goal_finished:
             done = True
-            return reward, done
+            return reward, done, True
 
         # get subgoal and action
-        expert_plan = self.traj['plan']['high_pddl']
-        action_type = expert_plan[self.goal_idx]['planner_action']['action']
+        # expert_plan = self.traj['plan']['high_pddl']
+        if not target_goal_idx:
+            target_goal_idx = self.goal_idx
+            
+        action_type = self.expert_plan[target_goal_idx]['planner_action']['action']
 
         # subgoal reward
         sg_done = False
         if "dense" in self.reward_type:
             action = get_action(action_type, self.gt_graph, env, self.reward_config)
-            sg_reward, sg_done = action.get_reward(state, self.prev_state, expert_plan, self.goal_idx)
+            sg_reward, sg_done = action.get_reward(state, self.prev_state, self.expert_plan, target_goal_idx)
             reward += sg_reward
-            if sg_done:
+            if sg_done and expert:
                 self.finished += 1
-                if self.goal_idx + 1 < self.num_subgoals:
+                if self.goal_idx < target_goal_idx and self.goal_idx + 1 < self.num_subgoals:
                     self.goal_idx += 1
 
         # end task reward
@@ -105,17 +129,17 @@ class BaseTask(object):
             reward += self.reward_config['Generic']['goal_reward']
             self.goal_finished = True
 
-        # success reward
-        if "success" in self.reward_type and state['lastActionSuccess']:
-            reward += self.reward_config['Generic']['success']
+        # # success reward
+        # if "success" in self.reward_type and state['lastActionSuccess']:
+        #     reward += self.reward_config['Generic']['success']
 
-        # failure reward
-        if "failure" in self.reward_type and not state['lastActionSuccess']:
-            reward += self.reward_config['Generic']['failure']
+        # # failure reward
+        # if "failure" in self.reward_type and not state['lastActionSuccess']:
+        #     reward += self.reward_config['Generic']['failure']
 
         # step penalty
-        if self.step_num > len(self.traj['plan']['low_actions']):
-            reward += self.reward_config['Generic']['step_penalty']
+        # if self.step_num > len(self.traj['plan']['low_actions']):
+        #     reward += self.reward_config['Generic']['step_penalty']
 
         # save event
         self.prev_state = state
@@ -147,16 +171,25 @@ class BaseTask(object):
         '''
         returns a dictionary of all targets for the task
         '''
-        targets = {
-            'object': self.get_target('object_target'),
-            'parent': self.get_target('parent_target'),
-            'toggle': self.get_target('toggle_target'),
-            'mrecep': self.get_target('mrecep_target'),
-        }
+        if 'long_horizon_task' in self.traj:
+            targets = {
+                'object': self.task_info['pickup'],
+                'parent': self.task_info['receptacle'],
+                'toggle': None,
+                'mrecep': self.task_info['movable'],
+            }
+        else:
+            targets = {
+                'object': self.get_target('object_target'),
+                'parent': self.get_target('parent_target'),
+                'toggle': self.get_target('toggle_target'),
+                'mrecep': self.get_target('mrecep_target'),
+            }
 
-        # slice exception
-        if 'object_sliced' in self.traj['pddl_params'] and self.traj['pddl_params']['object_sliced']:
-            targets['object'] += 'Sliced'  # Change, e.g., "Apple" -> "AppleSliced" as pickup target.
+            # slice exception
+            if 'object_sliced' in self.traj['pddl_params'] and self.traj['pddl_params']['object_sliced']:
+                breakpoint()
+                targets['object'] += 'Sliced'  # Change, e.g., "Apple" -> "AppleSliced" as pickup target.
 
         return targets
 
@@ -218,6 +251,8 @@ class PickTwoObjAndPlaceTask(BaseTask):
 
         targets = self.get_targets()
         receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+        if len(receptacles) == 0 and targets['parent'] == 'SinkBasin':
+            receptacles = get_objects_with_name_and_prop('Sink', 'receptacle', state['objects'])
         pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
 
         # check if object needs to be sliced
@@ -225,6 +260,9 @@ class PickTwoObjAndPlaceTask(BaseTask):
             ts += 2
             s += min(len([p for p in pickupables if 'Sliced' in p['objectId']]), 2)
             
+        if len(receptacles) == 0 or len(pickupables) == 0:
+            return s, ts
+        
         # placing each object counts as a goal_condition
         s += min(np.max([sum([1 if r['receptacleObjectIds'] is not None
                                    and p['objectId'] in r['receptacleObjectIds'] else 0
@@ -468,11 +506,59 @@ class PickAndPlaceWithMovableRecepTask(BaseTask):
         super().reset()
 
 
-def get_task(task_type, traj, last_event, reward_type='sparse', max_episode_length=2000):
+class PutObjectTask(BaseTask):
+    '''
+    put object task
+    '''
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def goal_satisfied(self, state, env):
+        # check if any object of 'object' class is inside any receptacle of 'parent' class
+        pcs = self.goal_conditions_met(state)
+        return pcs[0] == pcs[1]
+
+    def goal_conditions_met(self, state):
+        ts = 1
+        s = 0
+
+        targets = self.get_targets()
+        receptacles = get_objects_with_name_and_prop(targets['parent'], 'receptacle', state['objects'])
+
+        #pickupables = get_objects_with_name_and_prop(targets['object'], 'pickupable', state['objects'])
+
+        # check if object needs to be sliced
+        # if 'Sliced' in targets['object']:
+        #     ts += 1
+        #     if len([p for p in pickupables if 'Sliced' in p['objectId']]) >= 1:
+        #         s += 1
+
+        if len(state['inventoryObjects']) != 0:
+            return s, ts
+
+        for r in receptacles:
+            if r['receptacleObjectIds'] is not None:
+                recep_objnames = [x.split("|")[0] for x in r['receptacleObjectIds']]
+                if targets['object'] in recep_objnames or targets['mrecep'] in recep_objnames:
+                    s += 1
+                    break
+
+        return s, ts
+
+    def reset(self):
+        super().reset()
+
+
+def get_task(task_type, traj, last_event, sub_traj_idx=None, task_info=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
     task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
     
     if task_class_str in globals():
         task = globals()[task_class_str]
-        return task(traj, last_event, reward_type=reward_type, max_episode_length=max_episode_length)
+        return task(traj, last_event, 
+                    sub_traj_idx=sub_traj_idx,
+                    task_type=task_type, task_info=task_info, 
+                    num_subgoals=num_subgoals,
+                    reward_type=reward_type, max_episode_length=max_episode_length)
     else:
         raise Exception("Invalid task_type %s" % task_class_str)

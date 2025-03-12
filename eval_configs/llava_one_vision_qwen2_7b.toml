@@ -10,7 +10,7 @@ save_traces_folder = "profile_trace"
 profile_freq = 100
 
 [metrics]
-enable_wandb = true
+enable_wandb = false
 
 [model]
 name = "llava-hf/llava-onevision-qwen2-7b-ov-hf"

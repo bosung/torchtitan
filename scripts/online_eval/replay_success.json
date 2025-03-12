@@ -1,0 +1,1378 @@
+{
+    "floorplan409_15_347_1739518485": {
+        "success": false,
+        "total_reward": 13.700000000000001
+    },
+    "floorplan409_15_265_1739895096": {
+        "success": false,
+        "total_reward": 20.89999999999998
+    },
+    "floorplan223_11_343_1739009826": {
+        "success": false,
+        "total_reward": 166.7999999999997
+    },
+    "floorplan223_11_409_1739006253": {
+        "success": false,
+        "total_reward": 13.499999999999986
+    },
+    "floorplan223_11_442_1739041765": {
+        "success": false,
+        "total_reward": 9.499999999999984
+    },
+    "floorplan223_11_479_1739232774": {
+        "success": false,
+        "total_reward": 18.499999999999943
+    },
+    "floorplan223_11_400_1739238492": {
+        "success": false,
+        "total_reward": 8.899999999999967
+    },
+    "floorplan223_11_352_1739685849": {
+        "success": false,
+        "total_reward": 25.499999999999932
+    },
+    "floorplan223_11_398_1739244993": {
+        "success": false,
+        "total_reward": 13.899999999999965
+    },
+    "floorplan223_11_308_1739675439": {
+        "success": false,
+        "total_reward": 11.399999999999984
+    },
+    "floorplan223_11_295_1739080460": {
+        "success": true,
+        "total_reward": 12.299999999999981
+    },
+    "floorplan223_11_310_1739688922": {
+        "success": true,
+        "total_reward": 14.09999999999997
+    },
+    "floorplan223_11_323_1739764440": {
+        "success": true,
+        "total_reward": 36.49999999999991
+    },
+    "floorplan223_12_298_1739675350": {
+        "success": true,
+        "total_reward": 16.499999999999932
+    },
+    "floorplan223_11_352_1740184264": {
+        "success": true,
+        "total_reward": 13.099999999999943
+    },
+    "floorplan223_11_297_1739280740": {
+        "success": false,
+        "total_reward": 29.399999999999896
+    },
+    "floorplan223_12_314_1739007968": {
+        "success": true,
+        "total_reward": 15.999999999999947
+    },
+    "floorplan322_11_519_1739781685": {
+        "success": false,
+        "total_reward": 30.699999999999964
+    },
+    "floorplan322_11_365_1739504011": {
+        "success": false,
+        "total_reward": 44.500000000000085
+    },
+    "floorplan325_11_558_1739328794": {
+        "success": false,
+        "total_reward": 14.999999999999984
+    },
+    "floorplan325_11_422_1739231310": {
+        "success": false,
+        "total_reward": 9.600000000000005
+    },
+    "floorplan325_11_348_1739338942": {
+        "success": false,
+        "total_reward": 36.0999999999999
+    },
+    "floorplan325_11_461_1739832053": {
+        "success": false,
+        "total_reward": 36.39999999999996
+    },
+    "floorplan211_12_278_1739302901": {
+        "success": false,
+        "total_reward": 9.799999999999997
+    },
+    "floorplan211_11_357_1739228124": {
+        "success": false,
+        "total_reward": 9.499999999999995
+    },
+    "floorplan211_11_323_1739677992": {
+        "success": false,
+        "total_reward": 16.999999999999975
+    },
+    "floorplan211_11_324_1739236321": {
+        "success": true,
+        "total_reward": 15.19999999999992
+    },
+    "floorplan211_11_335_1739239962": {
+        "success": true,
+        "total_reward": 10.499999999999927
+    },
+    "floorplan211_11_341_1740195280": {
+        "success": false,
+        "total_reward": 17.299999999999873
+    },
+    "floorplan211_11_448_1740184327": {
+        "success": false,
+        "total_reward": 12.199999999999958
+    },
+    "floorplan211_11_358_1739221388": {
+        "success": false,
+        "total_reward": 17.699999999999942
+    },
+    "floorplan211_11_302_1739680452": {
+        "success": false,
+        "total_reward": 9.099999999999996
+    },
+    "floorplan211_11_307_1739674256": {
+        "success": false,
+        "total_reward": 14.599999999999929
+    },
+    "floorplan211_12_304_1739024063": {
+        "success": false,
+        "total_reward": 14.199999999999994
+    },
+    "floorplan211_11_337_1739009189": {
+        "success": true,
+        "total_reward": 31.199999999999882
+    },
+    "floorplan211_11_310_1739071115": {
+        "success": true,
+        "total_reward": 15.09999999999993
+    },
+    "floorplan211_12_298_1739741665": {
+        "success": false,
+        "total_reward": 13.899999999999956
+    },
+    "floorplan211_13_299_1739776591": {
+        "success": false,
+        "total_reward": 20.299999999999958
+    },
+    "floorplan211_12_315_1739031328": {
+        "success": false,
+        "total_reward": 14.69999999999997
+    },
+    "floorplan211_11_338_1739236552": {
+        "success": false,
+        "total_reward": 26.49999999999993
+    },
+    "floorplan211_11_307_1741073495": {
+        "success": true,
+        "total_reward": 34.899999999999885
+    },
+    "floorplan211_11_364_1739283526": {
+        "success": false,
+        "total_reward": 11.099999999999985
+    },
+    "floorplan211_11_308_1739081886": {
+        "success": true,
+        "total_reward": 5.499999999999994
+    },
+    "floorplan211_11_320_1739006201": {
+        "success": true,
+        "total_reward": 13.29999999999998
+    },
+    "floorplan323_11_517_1739365455": {
+        "success": true,
+        "total_reward": 57.20000000000008
+    },
+    "floorplan323_11_497_1739262164": {
+        "success": false,
+        "total_reward": 22.699999999999935
+    },
+    "floorplan323_11_516_1741111949": {
+        "success": true,
+        "total_reward": 24.19999999999993
+    },
+    "floorplan307_14_321_1739154514": {
+        "success": false,
+        "total_reward": 12.500000000000002
+    },
+    "floorplan307_15_285_1739086769": {
+        "success": false,
+        "total_reward": 21.199999999999992
+    },
+    "floorplan307_13_283_1739779984": {
+        "success": false,
+        "total_reward": 29.099999999999934
+    },
+    "floorplan307_13_380_1739317191": {
+        "success": false,
+        "total_reward": 17.099999999999945
+    },
+    "floorplan307_14_331_1739280434": {
+        "success": false,
+        "total_reward": 21.899999999999952
+    },
+    "floorplan307_13_303_1739085322": {
+        "success": false,
+        "total_reward": 31.199999999999925
+    },
+    "floorplan307_13_282_1741167624": {
+        "success": false,
+        "total_reward": 14.499999999999986
+    },
+    "floorplan307_15_296_1739470598": {
+        "success": false,
+        "total_reward": 12.6
+    },
+    "floorplan330_11_356_1739807290": {
+        "success": false,
+        "total_reward": 22.99999999999993
+    },
+    "floorplan330_11_493_1739092764": {
+        "success": false,
+        "total_reward": 21.99999999999996
+    },
+    "floorplan330_11_418_1739306086": {
+        "success": false,
+        "total_reward": 14.699999999999985
+    },
+    "floorplan330_11_514_1739081299": {
+        "success": false,
+        "total_reward": 13.399999999999977
+    },
+    "floorplan330_11_717_1739355553": {
+        "success": false,
+        "total_reward": 22.099999999999973
+    },
+    "floorplan330_11_391_1739843192": {
+        "success": false,
+        "total_reward": 55.80000000000005
+    },
+    "floorplan330_11_421_1739247731": {
+        "success": false,
+        "total_reward": 40.89999999999996
+    },
+    "floorplan6_12_277_1738941768": {
+        "success": false,
+        "total_reward": 0.4
+    },
+    "floorplan6_14_453_1738947001": {
+        "success": false,
+        "total_reward": 14.99999999999995
+    },
+    "floorplan6_14_326_1738643638": {
+        "success": true,
+        "total_reward": 38.3999999999999
+    },
+    "floorplan6_11_403_1739420948": {
+        "success": false,
+        "total_reward": 14.59999999999997
+    },
+    "floorplan6_13_334_1738933801": {
+        "success": false,
+        "total_reward": 25.200000000000003
+    },
+    "floorplan6_11_347_1738945814": {
+        "success": false,
+        "total_reward": 95.20000000000029
+    },
+    "floorplan6_11_586_1738977827": {
+        "success": false,
+        "total_reward": 22.499999999999982
+    },
+    "floorplan6_11_373_1738935916": {
+        "success": false,
+        "total_reward": 63.40000000000022
+    },
+    "floorplan6_12_318_1740044805": {
+        "success": false,
+        "total_reward": 38.90000000000002
+    },
+    "floorplan6_14_426_1738979030": {
+        "success": false,
+        "total_reward": 121.8000000000003
+    },
+    "floorplan6_11_630_1738995118": {
+        "success": false,
+        "total_reward": 87.70000000000022
+    },
+    "floorplan6_12_306_1738973255": {
+        "success": false,
+        "total_reward": 107.30000000000035
+    },
+    "floorplan6_12_342_1738923036": {
+        "success": false,
+        "total_reward": 137.5000000000003
+    },
+    "floorplan6_12_384_1741420429": {
+        "success": false,
+        "total_reward": 130.6000000000003
+    },
+    "floorplan403_11_569_1739386690": {
+        "success": false,
+        "total_reward": 93.9000000000002
+    },
+    "floorplan11_14_286_1738991324": {
+        "success": false,
+        "total_reward": 122.10000000000028
+    },
+    "floorplan11_15_324_1739943098": {
+        "success": false,
+        "total_reward": 112.1000000000003
+    },
+    "floorplan11_14_332_1738966747": {
+        "success": false,
+        "total_reward": 34.09999999999998
+    },
+    "floorplan11_15_284_1739595181": {
+        "success": false,
+        "total_reward": 38.70000000000001
+    },
+    "floorplan11_12_324_1739984940": {
+        "success": false,
+        "total_reward": 28.399999999999963
+    },
+    "floorplan11_13_398_1738945877": {
+        "success": false,
+        "total_reward": 27.100000000000005
+    },
+    "floorplan11_15_291_1738985662": {
+        "success": false,
+        "total_reward": 53.80000000000004
+    },
+    "floorplan11_13_279_1738979165": {
+        "success": false,
+        "total_reward": 105.20000000000027
+    },
+    "floorplan11_16_334_1738969518": {
+        "success": false,
+        "total_reward": 14.400000000000007
+    },
+    "floorplan11_14_273_1738968925": {
+        "success": false,
+        "total_reward": 43.29999999999999
+    },
+    "floorplan11_15_305_1738996388": {
+        "success": false,
+        "total_reward": 29.099999999999973
+    },
+    "floorplan2_19_320_1738115114": {
+        "success": true,
+        "total_reward": 251.89999999999935
+    },
+    "floorplan2_11_308_1738972070": {
+        "success": false,
+        "total_reward": 47.00000000000003
+    },
+    "floorplan2_13_316_1738918107": {
+        "success": false,
+        "total_reward": 97.40000000000026
+    },
+    "floorplan2_15_322_1738918536": {
+        "success": false,
+        "total_reward": 46.19999999999997
+    },
+    "floorplan2_20_545_1737271417": {
+        "success": false,
+        "total_reward": 258.29999999999916
+    },
+    "floorplan2_13_334_1738978471": {
+        "success": false,
+        "total_reward": 69.50000000000001
+    },
+    "floorplan2_16_340_1738730070": {
+        "success": false,
+        "total_reward": 86.70000000000013
+    },
+    "floorplan2_12_332_1739475959": {
+        "success": false,
+        "total_reward": 168.1999999999997
+    },
+    "floorplan2_14_278_1739003812": {
+        "success": true,
+        "total_reward": 188.89999999999964
+    },
+    "floorplan2_14_298_1738918220": {
+        "success": false,
+        "total_reward": 126.10000000000028
+    },
+    "floorplan2_15_332_1738110744": {
+        "success": true,
+        "total_reward": 218.29999999999907
+    },
+    "floorplan2_12_295_1738922472": {
+        "success": false,
+        "total_reward": 167.79999999999964
+    },
+    "floorplan2_16_345_1737382766": {
+        "success": false,
+        "total_reward": 123.60000000000026
+    },
+    "floorplan2_13_291_1738972514": {
+        "success": true,
+        "total_reward": 163.2999999999999
+    },
+    "floorplan2_12_344_1739981572": {
+        "success": false,
+        "total_reward": 35.49999999999998
+    },
+    "floorplan2_14_331_1737342959": {
+        "success": false,
+        "total_reward": 98.20000000000023
+    },
+    "floorplan2_14_319_1737887832": {
+        "success": true,
+        "total_reward": 191.29999999999933
+    },
+    "floorplan2_11_276_1738914280": {
+        "success": false,
+        "total_reward": 31.299999999999986
+    },
+    "floorplan2_16_322_1737385352": {
+        "success": true,
+        "total_reward": 185.39999999999978
+    },
+    "floorplan2_11_336_1738979274": {
+        "success": false,
+        "total_reward": 20.699999999999985
+    },
+    "floorplan4_17_326_1738303461": {
+        "success": true,
+        "total_reward": 233.29999999999922
+    },
+    "floorplan4_19_318_1738293350": {
+        "success": false,
+        "total_reward": 198.49999999999977
+    },
+    "floorplan4_17_277_1738983011": {
+        "success": true,
+        "total_reward": 210.79999999999944
+    },
+    "floorplan4_16_312_1737912684": {
+        "success": false,
+        "total_reward": 10.700000000000003
+    },
+    "floorplan4_16_417_1738929530": {
+        "success": false,
+        "total_reward": 95.40000000000013
+    },
+    "floorplan4_17_324_1738280644": {
+        "success": false,
+        "total_reward": 21.09999999999999
+    },
+    "floorplan4_16_289_1738925729": {
+        "success": true,
+        "total_reward": 209.99999999999963
+    },
+    "floorplan4_17_326_1738308705": {
+        "success": false,
+        "total_reward": 33.299999999999976
+    },
+    "floorplan4_15_335_1739009565": {
+        "success": false,
+        "total_reward": 130.9000000000003
+    },
+    "floorplan4_16_336_1738385617": {
+        "success": false,
+        "total_reward": 201.89999999999944
+    },
+    "floorplan4_16_333_1738935149": {
+        "success": false,
+        "total_reward": 77.2000000000002
+    },
+    "floorplan4_15_380_1738929767": {
+        "success": false,
+        "total_reward": 72.5000000000001
+    },
+    "floorplan4_15_337_1738289590": {
+        "success": false,
+        "total_reward": 125.30000000000038
+    },
+    "floorplan4_14_274_1738919673": {
+        "success": false,
+        "total_reward": 6.1000000000000005
+    },
+    "floorplan4_14_377_1740143707": {
+        "success": false,
+        "total_reward": 158.39999999999992
+    },
+    "floorplan4_15_296_1738927768": {
+        "success": false,
+        "total_reward": 129.60000000000028
+    },
+    "floorplan4_16_284_1738977799": {
+        "success": false,
+        "total_reward": 65.60000000000005
+    },
+    "floorplan4_15_314_1738484849": {
+        "success": false,
+        "total_reward": 63.50000000000008
+    },
+    "floorplan4_14_298_1738936938": {
+        "success": false,
+        "total_reward": 159.9000000000002
+    },
+    "floorplan4_15_295_1739522461": {
+        "success": false,
+        "total_reward": 157.9000000000001
+    },
+    "floorplan227_11_405_1739681884": {
+        "success": false,
+        "total_reward": 86.00000000000017
+    },
+    "floorplan227_11_324_1739231563": {
+        "success": false,
+        "total_reward": 157.69999999999985
+    },
+    "floorplan227_11_367_1739080963": {
+        "success": false,
+        "total_reward": 68.3000000000001
+    },
+    "floorplan227_12_368_1741129690": {
+        "success": false,
+        "total_reward": 165.8999999999997
+    },
+    "floorplan227_11_309_1739699170": {
+        "success": true,
+        "total_reward": 195.99999999999918
+    },
+    "floorplan227_11_441_1739248118": {
+        "success": false,
+        "total_reward": 168.09999999999945
+    },
+    "floorplan227_11_346_1739103719": {
+        "success": false,
+        "total_reward": 165.49999999999986
+    },
+    "floorplan227_11_439_1739061858": {
+        "success": false,
+        "total_reward": 143.1000000000004
+    },
+    "floorplan227_11_348_1739698914": {
+        "success": false,
+        "total_reward": 81.50000000000023
+    },
+    "floorplan227_11_488_1739029368": {
+        "success": false,
+        "total_reward": 131.50000000000043
+    },
+    "floorplan227_11_344_1739241408": {
+        "success": false,
+        "total_reward": 110.10000000000045
+    },
+    "floorplan227_11_390_1739234420": {
+        "success": false,
+        "total_reward": 172.09999999999968
+    },
+    "floorplan227_11_287_1739076273": {
+        "success": false,
+        "total_reward": 141.20000000000027
+    },
+    "floorplan227_11_402_1739677582": {
+        "success": false,
+        "total_reward": 119.30000000000041
+    },
+    "floorplan227_11_308_1739229117": {
+        "success": true,
+        "total_reward": 171.09999999999962
+    },
+    "floorplan227_11_372_1739013815": {
+        "success": false,
+        "total_reward": 123.50000000000044
+    },
+    "floorplan227_11_363_1739219493": {
+        "success": false,
+        "total_reward": 48.60000000000004
+    },
+    "floorplan227_11_310_1739253060": {
+        "success": false,
+        "total_reward": 155.09999999999997
+    },
+    "floorplan208_11_313_1739230491": {
+        "success": false,
+        "total_reward": 35.899999999999984
+    },
+    "floorplan208_11_299_1739696447": {
+        "success": false,
+        "total_reward": 155.80000000000027
+    },
+    "floorplan208_12_324_1741058548": {
+        "success": false,
+        "total_reward": 78.30000000000014
+    },
+    "floorplan411_15_298_1739396724": {
+        "success": false,
+        "total_reward": 37.70000000000001
+    },
+    "floorplan415_12_308_1741166904": {
+        "success": false,
+        "total_reward": 61.50000000000007
+    },
+    "floorplan228_11_321_1739021605": {
+        "success": false,
+        "total_reward": 109.60000000000029
+    },
+    "floorplan228_11_336_1741117957": {
+        "success": false,
+        "total_reward": 103.00000000000036
+    },
+    "floorplan228_11_358_1740188687": {
+        "success": false,
+        "total_reward": 78.1000000000002
+    },
+    "floorplan228_11_330_1739677492": {
+        "success": false,
+        "total_reward": 171.79999999999947
+    },
+    "floorplan228_11_352_1739042798": {
+        "success": false,
+        "total_reward": 154.89999999999984
+    },
+    "floorplan228_11_287_1739732455": {
+        "success": false,
+        "total_reward": 114.80000000000024
+    },
+    "floorplan228_14_305_1739008156": {
+        "success": false,
+        "total_reward": 161.79999999999973
+    },
+    "floorplan228_12_310_1739229975": {
+        "success": false,
+        "total_reward": 139.90000000000018
+    },
+    "floorplan228_11_286_1739005860": {
+        "success": false,
+        "total_reward": 71.50000000000007
+    },
+    "floorplan228_11_295_1739225731": {
+        "success": false,
+        "total_reward": 153.79999999999995
+    },
+    "floorplan228_11_305_1739414555": {
+        "success": false,
+        "total_reward": 47.00000000000006
+    },
+    "floorplan228_11_316_1739082247": {
+        "success": false,
+        "total_reward": 96.50000000000027
+    },
+    "floorplan228_11_342_1739015787": {
+        "success": false,
+        "total_reward": 82.90000000000028
+    },
+    "floorplan228_11_321_1739225675": {
+        "success": false,
+        "total_reward": 108.8000000000003
+    },
+    "floorplan228_11_305_1739039420": {
+        "success": false,
+        "total_reward": 80.20000000000012
+    },
+    "floorplan228_14_293_1739245537": {
+        "success": true,
+        "total_reward": 195.89999999999944
+    },
+    "floorplan13_11_416_1738962238": {
+        "success": false,
+        "total_reward": 39.40000000000001
+    },
+    "floorplan13_11_424_1739001733": {
+        "success": false,
+        "total_reward": 12.000000000000002
+    },
+    "floorplan13_11_636_1740171003": {
+        "success": false,
+        "total_reward": 78.50000000000021
+    },
+    "floorplan13_12_292_1741456859": {
+        "success": false,
+        "total_reward": 27.89999999999995
+    },
+    "floorplan13_11_520_1739593057": {
+        "success": false,
+        "total_reward": 37.199999999999946
+    },
+    "floorplan13_11_351_1740051002": {
+        "success": false,
+        "total_reward": 111.90000000000036
+    },
+    "floorplan14_14_335_1739462747": {
+        "success": false,
+        "total_reward": 19.700000000000003
+    },
+    "floorplan14_15_384_1740097910": {
+        "success": false,
+        "total_reward": 168.0999999999995
+    },
+    "floorplan14_13_301_1738966617": {
+        "success": false,
+        "total_reward": 96.70000000000022
+    },
+    "floorplan206_12_320_1739004073": {
+        "success": false,
+        "total_reward": 163.1999999999996
+    },
+    "floorplan206_11_263_1740184999": {
+        "success": true,
+        "total_reward": 149.70000000000022
+    },
+    "floorplan206_12_276_1739065335": {
+        "success": true,
+        "total_reward": 172.49999999999994
+    },
+    "floorplan206_12_295_1739227418": {
+        "success": false,
+        "total_reward": 158.7
+    },
+    "floorplan206_11_275_1739677104": {
+        "success": true,
+        "total_reward": 154.1
+    },
+    "floorplan206_12_329_1739004539": {
+        "success": false,
+        "total_reward": 148.60000000000008
+    },
+    "floorplan206_13_287_1739241837": {
+        "success": true,
+        "total_reward": 193.0999999999994
+    },
+    "floorplan206_12_269_1741075578": {
+        "success": true,
+        "total_reward": 163.39999999999995
+    },
+    "floorplan204_11_567_1739684412": {
+        "success": false,
+        "total_reward": 56.30000000000003
+    },
+    "floorplan204_11_640_1739232757": {
+        "success": false,
+        "total_reward": 61.00000000000015
+    },
+    "floorplan204_11_451_1739026827": {
+        "success": false,
+        "total_reward": 185.29999999999927
+    },
+    "floorplan204_11_368_1739073777": {
+        "success": true,
+        "total_reward": 189.79999999999933
+    },
+    "floorplan204_11_409_1740202412": {
+        "success": false,
+        "total_reward": 96.8000000000002
+    },
+    "floorplan204_11_399_1739233374": {
+        "success": true,
+        "total_reward": 181.99999999999903
+    },
+    "floorplan204_11_413_1739846465": {
+        "success": false,
+        "total_reward": 37.599999999999994
+    },
+    "floorplan204_11_390_1739234322": {
+        "success": false,
+        "total_reward": 119.80000000000032
+    },
+    "floorplan204_11_344_1739674610": {
+        "success": true,
+        "total_reward": 164.99999999999977
+    },
+    "floorplan204_11_470_1739218328": {
+        "success": false,
+        "total_reward": 192.79999999999967
+    },
+    "floorplan204_11_435_1739095258": {
+        "success": false,
+        "total_reward": 48.60000000000005
+    },
+    "floorplan204_11_462_1739688285": {
+        "success": false,
+        "total_reward": 174.89999999999947
+    },
+    "floorplan204_11_517_1739057183": {
+        "success": false,
+        "total_reward": 156.6999999999999
+    },
+    "floorplan204_11_412_1739056475": {
+        "success": false,
+        "total_reward": 73.00000000000017
+    },
+    "floorplan204_11_484_1739220464": {
+        "success": false,
+        "total_reward": 177.4999999999997
+    },
+    "floorplan204_11_419_1739075045": {
+        "success": false,
+        "total_reward": 193.2999999999992
+    },
+    "floorplan204_11_413_1739729194": {
+        "success": false,
+        "total_reward": 201.4999999999991
+    },
+    "floorplan204_11_529_1739703561": {
+        "success": false,
+        "total_reward": 223.5999999999986
+    },
+    "floorplan204_11_573_1741137826": {
+        "success": false,
+        "total_reward": 210.199999999999
+    },
+    "floorplan204_11_345_1739270397": {
+        "success": false,
+        "total_reward": 129.20000000000036
+    },
+    "floorplan204_11_442_1739693111": {
+        "success": false,
+        "total_reward": 52.00000000000014
+    },
+    "floorplan219_11_371_1739015575": {
+        "success": false,
+        "total_reward": 109.10000000000024
+    },
+    "floorplan219_11_458_1739693906": {
+        "success": false,
+        "total_reward": 62.800000000000026
+    },
+    "floorplan219_11_311_1739700401": {
+        "success": false,
+        "total_reward": 119.50000000000036
+    },
+    "floorplan219_11_427_1739691079": {
+        "success": false,
+        "total_reward": 69.70000000000014
+    },
+    "floorplan219_11_273_1741086184": {
+        "success": false,
+        "total_reward": 62.20000000000006
+    },
+    "floorplan219_11_463_1739242523": {
+        "success": false,
+        "total_reward": 55.600000000000065
+    },
+    "floorplan219_11_615_1739681488": {
+        "success": false,
+        "total_reward": 113.00000000000028
+    },
+    "floorplan219_11_484_1739703562": {
+        "success": false,
+        "total_reward": 103.90000000000022
+    },
+    "floorplan219_11_356_1739096646": {
+        "success": true,
+        "total_reward": 186.39999999999944
+    },
+    "floorplan219_11_358_1740205629": {
+        "success": false,
+        "total_reward": 56.100000000000065
+    },
+    "floorplan219_12_373_1739071135": {
+        "success": false,
+        "total_reward": 13.799999999999988
+    },
+    "floorplan219_11_311_1739674869": {
+        "success": false,
+        "total_reward": 147.0000000000004
+    },
+    "floorplan219_12_288_1739061040": {
+        "success": false,
+        "total_reward": 77.10000000000014
+    },
+    "floorplan219_11_320_1739247940": {
+        "success": false,
+        "total_reward": 90.80000000000022
+    },
+    "floorplan219_11_332_1739043605": {
+        "success": false,
+        "total_reward": 171.49999999999991
+    },
+    "floorplan219_11_328_1741059276": {
+        "success": false,
+        "total_reward": 27.299999999999976
+    },
+    "floorplan219_11_324_1739076178": {
+        "success": false,
+        "total_reward": 69.00000000000016
+    },
+    "floorplan219_11_335_1739250760": {
+        "success": false,
+        "total_reward": 30.29999999999996
+    },
+    "floorplan219_11_485_1741060459": {
+        "success": false,
+        "total_reward": 78.50000000000017
+    },
+    "floorplan219_11_413_1739006911": {
+        "success": false,
+        "total_reward": 153.20000000000013
+    },
+    "floorplan219_11_376_1739226889": {
+        "success": false,
+        "total_reward": 50.200000000000074
+    },
+    "floorplan219_11_363_1739226249": {
+        "success": false,
+        "total_reward": 55.500000000000085
+    },
+    "floorplan219_11_563_1739706402": {
+        "success": false,
+        "total_reward": 174.89999999999966
+    },
+    "floorplan9_12_436_1738963849": {
+        "success": false,
+        "total_reward": 126.20000000000034
+    },
+    "floorplan9_11_274_1738955035": {
+        "success": false,
+        "total_reward": 111.30000000000045
+    },
+    "floorplan9_12_332_1738960227": {
+        "success": false,
+        "total_reward": 167.49999999999994
+    },
+    "floorplan9_11_288_1741377325": {
+        "success": false,
+        "total_reward": 19.199999999999996
+    },
+    "floorplan9_12_291_1738938605": {
+        "success": false,
+        "total_reward": 44.29999999999997
+    },
+    "floorplan9_11_369_1738957124": {
+        "success": false,
+        "total_reward": 43.10000000000012
+    },
+    "floorplan9_12_429_1738980465": {
+        "success": false,
+        "total_reward": 155.20000000000022
+    },
+    "floorplan9_12_290_1739582568": {
+        "success": false,
+        "total_reward": 135.6000000000002
+    },
+    "floorplan9_11_369_1739432335": {
+        "success": false,
+        "total_reward": 6.800000000000001
+    },
+    "floorplan9_11_309_1739929331": {
+        "success": false,
+        "total_reward": 92.60000000000035
+    },
+    "floorplan9_14_295_1738987330": {
+        "success": false,
+        "total_reward": 177.20000000000002
+    },
+    "floorplan9_13_314_1738967666": {
+        "success": false,
+        "total_reward": 115.40000000000035
+    },
+    "floorplan218_11_659_1739679613": {
+        "success": false,
+        "total_reward": 194.6999999999986
+    },
+    "floorplan218_11_719_1739037910": {
+        "success": false,
+        "total_reward": 221.59999999999835
+    },
+    "floorplan218_11_519_1739030313": {
+        "success": false,
+        "total_reward": 175.6
+    },
+    "floorplan218_11_599_1739062542": {
+        "success": true,
+        "total_reward": 217.59999999999815
+    },
+    "floorplan218_11_775_1739687789": {
+        "success": true,
+        "total_reward": 250.49999999999693
+    },
+    "floorplan218_11_742_1739709452": {
+        "success": false,
+        "total_reward": 24.29999999999998
+    },
+    "floorplan218_11_740_1739695899": {
+        "success": false,
+        "total_reward": 254.09999999999673
+    },
+    "floorplan218_11_695_1739692362": {
+        "success": false,
+        "total_reward": 229.7999999999981
+    },
+    "floorplan218_11_519_1739241766": {
+        "success": false,
+        "total_reward": 58.50000000000018
+    },
+    "floorplan218_11_597_1740192603": {
+        "success": true,
+        "total_reward": 223.09999999999883
+    },
+    "floorplan218_11_610_1739089800": {
+        "success": false,
+        "total_reward": 215.6999999999984
+    },
+    "floorplan218_11_571_1739009078": {
+        "success": false,
+        "total_reward": 203.59999999999866
+    },
+    "floorplan218_11_475_1739682528": {
+        "success": false,
+        "total_reward": 176.79999999999956
+    },
+    "floorplan218_11_629_1739282428": {
+        "success": true,
+        "total_reward": 221.49999999999753
+    },
+    "floorplan218_11_689_1740185962": {
+        "success": true,
+        "total_reward": 231.2999999999971
+    },
+    "floorplan218_11_685_1739679577": {
+        "success": true,
+        "total_reward": 241.69999999999774
+    },
+    "floorplan218_11_558_1739249540": {
+        "success": true,
+        "total_reward": 225.59999999999772
+    },
+    "floorplan218_11_745_1739220820": {
+        "success": false,
+        "total_reward": 239.09999999999724
+    },
+    "floorplan218_11_537_1739020938": {
+        "success": false,
+        "total_reward": 176.69999999999936
+    },
+    "floorplan218_11_948_1741095333": {
+        "success": false,
+        "total_reward": 37.89999999999997
+    },
+    "floorplan218_11_545_1739239107": {
+        "success": false,
+        "total_reward": 176.59999999999965
+    },
+    "floorplan218_11_567_1739248219": {
+        "success": true,
+        "total_reward": 211.69999999999789
+    },
+    "floorplan218_11_422_1739218778": {
+        "success": true,
+        "total_reward": 197.59999999999923
+    },
+    "floorplan218_11_949_1739675714": {
+        "success": false,
+        "total_reward": 247.89999999999677
+    },
+    "floorplan323_11_507_1741667096": {
+        "success": false,
+        "total_reward": 155.49999999999974
+    },
+    "floorplan206_12_309_1741600699": {
+        "success": false,
+        "total_reward": 160.09999999999974
+    },
+    "floorplan429_14_295_1739347712": {
+        "success": true,
+        "total_reward": 196.79999999999924
+    },
+    "floorplan26_12_313_1739418149": {
+        "success": false,
+        "total_reward": 61.90000000000006
+    },
+    "floorplan26_11_278_1739597513": {
+        "success": false,
+        "total_reward": 19.699999999999978
+    },
+    "floorplan26_13_296_1740023121": {
+        "success": false,
+        "total_reward": 106.60000000000025
+    },
+    "floorplan303_11_278_1739329901": {
+        "success": false,
+        "total_reward": 143.00000000000014
+    },
+    "floorplan303_11_271_1739305870": {
+        "success": false,
+        "total_reward": 152.50000000000014
+    },
+    "floorplan303_11_322_1739241712": {
+        "success": false,
+        "total_reward": 119.9000000000004
+    },
+    "floorplan303_11_412_1739080664": {
+        "success": false,
+        "total_reward": 157.49999999999986
+    },
+    "floorplan303_11_310_1739836967": {
+        "success": true,
+        "total_reward": 101.00000000000036
+    },
+    "floorplan303_11_280_1741233267": {
+        "success": true,
+        "total_reward": 111.2000000000003
+    },
+    "floorplan303_11_303_1739836158": {
+        "success": false,
+        "total_reward": 152.09999999999997
+    },
+    "floorplan15_11_402_1739973315": {
+        "success": false,
+        "total_reward": 22.59999999999999
+    },
+    "floorplan15_12_317_1738983738": {
+        "success": false,
+        "total_reward": 60.40000000000014
+    },
+    "floorplan15_12_298_1739585784": {
+        "success": false,
+        "total_reward": 30.399999999999977
+    },
+    "floorplan15_12_281_1739517858": {
+        "success": false,
+        "total_reward": 28.399999999999984
+    },
+    "floorplan15_12_480_1739003973": {
+        "success": false,
+        "total_reward": 63.3000000000001
+    },
+    "floorplan15_13_351_1739484466": {
+        "success": false,
+        "total_reward": 86.20000000000022
+    },
+    "floorplan3_11_433_1738925906": {
+        "success": false,
+        "total_reward": 18.299999999999997
+    },
+    "floorplan3_15_340_1738935419": {
+        "success": false,
+        "total_reward": 35.89999999999997
+    },
+    "floorplan3_14_342_1738368886": {
+        "success": false,
+        "total_reward": 108.00000000000028
+    },
+    "floorplan3_14_344_1737746093": {
+        "success": false,
+        "total_reward": 4.9
+    },
+    "floorplan3_11_398_1738922195": {
+        "success": false,
+        "total_reward": 24.099999999999977
+    },
+    "floorplan3_13_333_1739005049": {
+        "success": false,
+        "total_reward": 131.10000000000053
+    },
+    "floorplan3_14_2218_1738928108": {
+        "success": false,
+        "total_reward": 154.6000000000001
+    },
+    "floorplan3_15_363_1738121227": {
+        "success": false,
+        "total_reward": 149.90000000000003
+    },
+    "floorplan3_15_359_1738979320": {
+        "success": false,
+        "total_reward": 81.00000000000016
+    },
+    "floorplan3_13_426_1740196663": {
+        "success": false,
+        "total_reward": 129.10000000000034
+    },
+    "floorplan3_14_293_1738927388": {
+        "success": false,
+        "total_reward": 54.60000000000004
+    },
+    "floorplan3_17_329_1738728040": {
+        "success": false,
+        "total_reward": 132.40000000000035
+    },
+    "floorplan3_14_336_1738299476": {
+        "success": true,
+        "total_reward": 206.39999999999978
+    },
+    "floorplan3_11_353_1738918247": {
+        "success": false,
+        "total_reward": 151.30000000000007
+    },
+    "floorplan3_17_361_1738127934": {
+        "success": false,
+        "total_reward": 137.60000000000022
+    },
+    "floorplan3_14_510_1738928868": {
+        "success": false,
+        "total_reward": 88.00000000000024
+    },
+    "floorplan3_12_526_1738980384": {
+        "success": false,
+        "total_reward": 130.40000000000057
+    },
+    "floorplan3_14_321_1738474966": {
+        "success": false,
+        "total_reward": 78.10000000000016
+    },
+    "floorplan3_11_560_1738925895": {
+        "success": false,
+        "total_reward": 109.00000000000031
+    },
+    "floorplan309_11_611_1739080193": {
+        "success": false,
+        "total_reward": 140.80000000000038
+    },
+    "floorplan309_11_980_1739344774": {
+        "success": false,
+        "total_reward": 83.2000000000003
+    },
+    "floorplan19_12_331_1739546278": {
+        "success": false,
+        "total_reward": 20.199999999999992
+    },
+    "floorplan19_14_287_1739416212": {
+        "success": false,
+        "total_reward": 27.49999999999997
+    },
+    "floorplan19_16_291_1739939727": {
+        "success": false,
+        "total_reward": 73.10000000000004
+    },
+    "floorplan19_12_278_1739015719": {
+        "success": false,
+        "total_reward": 21.39999999999999
+    },
+    "floorplan19_16_309_1741373306": {
+        "success": false,
+        "total_reward": 19.69999999999999
+    },
+    "floorplan19_15_345_1739577475": {
+        "success": false,
+        "total_reward": 31.399999999999974
+    },
+    "floorplan19_15_287_1740131941": {
+        "success": false,
+        "total_reward": 167.39999999999995
+    },
+    "floorplan19_13_330_1739013869": {
+        "success": false,
+        "total_reward": 128.30000000000035
+    },
+    "floorplan222_12_401_1739234920": {
+        "success": false,
+        "total_reward": 61.50000000000006
+    },
+    "floorplan222_11_293_1739026352": {
+        "success": false,
+        "total_reward": 143.39999999999998
+    },
+    "floorplan222_15_284_1739068517": {
+        "success": true,
+        "total_reward": 189.19999999999965
+    },
+    "floorplan222_12_312_1739700001": {
+        "success": false,
+        "total_reward": 175.59999999999954
+    },
+    "floorplan222_13_444_1739246561": {
+        "success": false,
+        "total_reward": 65.80000000000004
+    },
+    "floorplan222_12_270_1739058823": {
+        "success": true,
+        "total_reward": 171.9999999999998
+    },
+    "floorplan222_13_282_1739847438": {
+        "success": true,
+        "total_reward": 180.19999999999948
+    },
+    "floorplan222_12_288_1740189359": {
+        "success": false,
+        "total_reward": 154.39999999999975
+    },
+    "floorplan222_12_296_1739688188": {
+        "success": true,
+        "total_reward": 199.19999999999914
+    },
+    "floorplan222_14_423_1741079403": {
+        "success": false,
+        "total_reward": 123.20000000000029
+    },
+    "floorplan222_13_317_1739674560": {
+        "success": false,
+        "total_reward": 180.69999999999942
+    },
+    "floorplan222_14_329_1739017048": {
+        "success": false,
+        "total_reward": 188.69999999999973
+    },
+    "floorplan222_13_303_1740191636": {
+        "success": false,
+        "total_reward": 151.8999999999998
+    },
+    "floorplan222_14_358_1739227605": {
+        "success": false,
+        "total_reward": 185.69999999999953
+    },
+    "floorplan222_12_368_1739676849": {
+        "success": false,
+        "total_reward": 175.29999999999956
+    },
+    "floorplan222_11_281_1739216789": {
+        "success": false,
+        "total_reward": 115.40000000000032
+    },
+    "floorplan313_19_289_1739368493": {
+        "success": false,
+        "total_reward": 134.30000000000013
+    },
+    "floorplan313_17_349_1741102497": {
+        "success": false,
+        "total_reward": 50.90000000000004
+    },
+    "floorplan313_15_392_1739150543": {
+        "success": false,
+        "total_reward": 208.99999999999932
+    },
+    "floorplan313_18_414_1741190663": {
+        "success": false,
+        "total_reward": 84.6000000000001
+    },
+    "floorplan313_22_294_1739265126": {
+        "success": false,
+        "total_reward": 34.9
+    },
+    "floorplan313_15_330_1739084718": {
+        "success": false,
+        "total_reward": 40.0
+    },
+    "floorplan328_14_693_1739290627": {
+        "success": false,
+        "total_reward": 122.00000000000024
+    },
+    "floorplan328_14_415_1739364749": {
+        "success": false,
+        "total_reward": 182.59999999999985
+    },
+    "floorplan328_12_850_1739492008": {
+        "success": false,
+        "total_reward": 118.70000000000024
+    },
+    "floorplan23_13_369_1739931940": {
+        "success": false,
+        "total_reward": 166.89999999999978
+    },
+    "floorplan23_14_314_1740104434": {
+        "success": false,
+        "total_reward": 43.19999999999998
+    },
+    "floorplan23_18_306_1739582511": {
+        "success": false,
+        "total_reward": 42.09999999999996
+    },
+    "floorplan23_19_437_1741404416": {
+        "success": false,
+        "total_reward": 66.00000000000004
+    },
+    "floorplan23_17_271_1739039741": {
+        "success": false,
+        "total_reward": 115.60000000000016
+    },
+    "floorplan23_17_305_1739606690": {
+        "success": false,
+        "total_reward": 90.20000000000013
+    },
+    "floorplan207_14_268_1739069525": {
+        "success": false,
+        "total_reward": 164.6999999999995
+    }
+}
