@@ -2,6 +2,10 @@ from datasets import load_dataset
 import os
 import json
 import subprocess
+from io import BytesIO
+from PIL import Image
+import base64
+import io
 
 import wandb
 
@@ -29,7 +33,6 @@ def save_s3(output_dir, s3_path): # output_dir: outputs/checkpoints/step-xxxx
 
     # Ensure upload is complete before proceeding
     # dist.barrier()
-
 
 api = wandb.Api()
 run_id = "expert" # run_id should be model name or "expert"
@@ -70,12 +73,12 @@ for floorplan_dir in os.listdir(data_dir):
             continue
 
         traj_id = file.split(".")[0]
-        if traj_id in replay_success and not replay_success[traj_id]["success"]:
-            continue
+        # if traj_id in replay_success and replay_success[traj_id]["success"]:
+        #     continue
         if traj_id in replay_success:
             continue
 
-        print("replay_success")
+        print(f" ======= {traj_id}")
         reward_log_file = f"online_eval/logs/{traj_id}.json"
         if os.path.exists(reward_log_file):
             reward_log = json.load(open(reward_log_file))
@@ -133,19 +136,24 @@ for floorplan_dir in os.listdir(data_dir):
 
             if not success:
                 break
+        
         # end of expert actions
         # log
-        table = wandb.Table(data=log_data, columns=["t", "Reward"])
-        wandb.log({f"{traj_id}/expert": wandb.plot.line(table, "t", "Reward",title="Reward")})
+        replay_success[traj_id] = {"success": success, "total_reward": total_reward}
+        print(file_path, success, total_reward)
+        json.dump(replay_success, open(replay_success_file, "w"), indent=4)
+
+        # table = wandb.Table(data=log_data, columns=["t", "Reward"])
+        # wandb.log({f"{traj_id}/expert": wandb.plot.line(table, "t", "Reward",title="Reward")})
         
-        if "expert" not in reward_log:
-            reward_log["expert"] = {}
-        reward_log["expert"]['x_time'] = log_data
+        # if "expert" not in reward_log:
+        #     reward_log["expert"] = {}
+        # reward_log["expert"]['x_time'] = log_data
 
-        save_json(reward_log_file, reward_log)
+        # save_json(reward_log_file, reward_log)
 
-        log_dir = "online_eval/logs"
-        s3_path = "s3://bosung-alfred/eval_logs/"
-        save_s3(log_dir, s3_path)
+        # log_dir = "online_eval/logs"
+        # s3_path = "s3://bosung-alfred/eval_logs/"
+        # save_s3(log_dir, s3_path)
 
                     
