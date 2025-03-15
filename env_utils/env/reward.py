@@ -14,14 +14,14 @@ REWARD_MAP = {
       "positive": 1,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "GotoLocationAction":
     {
       "positive": 4,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.5,
+      "invalid_action": 0,
       "min_reach_distance": 3
     },
     "PickupObjectAction":
@@ -29,76 +29,66 @@ REWARD_MAP = {
       "positive": 2,
       "negative": -1,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "PutObjectAction":
     {
       "positive": 2,
       "negative": -1,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "OpenObjectAction":
     {
       "positive": 2,
       "negative": -0.05,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "CloseObjectAction":
     {
       "positive": 1,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "ToggleObjectAction":
     {
       "positive": 1,
       "negative": -1,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "SliceObjectAction":
     {
       "positive": 1,
       "negative": -4,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "CleanObjectAction":
     {
       "positive": 2,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "HeatObjectAction":
     {
       "positive": 2,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     },
     "CoolObjectAction":
     {
       "positive": 2,
       "negative": 0,
       "neutral": 0,
-      "invalid_action": -0.1
+      "invalid_action": 0
     }
   }
 
-
-def is_eq_obj_ids(objA, objB):
-    name_a, x_a, y_a, z_a = objA.split("|")[:4]
-    name_b, x_b, y_b, z_b = objB.split("|")[:4]
-
-    if name_a != name_b:
-        return False
-    if np.linalg.norm(np.array([float(x_a), float(y_a), float(z_a)]) - np.array([float(x_b), float(y_b), float(z_b)])) > 0.1:
-        return False
-    return True
 
 class BaseAction(object):
     '''
@@ -137,7 +127,11 @@ class GotoLocationAction(BaseAction):
 
         prev_distance = len(prev_actions)
         curr_distance = len(curr_actions)
-        reward = (prev_distance - curr_distance) * 0.2 # distance reward factor?
+
+        if (prev_distance - curr_distance) > 0:
+            reward = (prev_distance - curr_distance) * 0.2 # distance reward factor?
+        else:
+            reward = 0.0
 
         # [DEPRECATED] Old criteria which requires the next subgoal object to be visible
         # Consider navigation a success if we can see the target object in the next step from here.
@@ -180,7 +174,9 @@ class PickupObjectAction(BaseAction):
             inv_object = remove_slice_postfix(inv_object)
             goal_object = remove_slice_postfix(goal_object)
 
-            reward, done = (self.rewards['positive'], True) if inv_object == goal_object else (self.rewards['negative'], False)
+            if inv_object == goal_object:
+                reward, done = (self.rewards['positive'], True)
+
         return reward, done
 
 
@@ -199,15 +195,15 @@ class PutObjectAction(BaseAction):
 
         subgoal = expert_plan[goal_idx]['planner_action']
 
-        #reward, done = self.rewards['neutral'], False
-        reward, done = self.rewards['negative'], False
+        reward, done = self.rewards['neutral'], False
         
         if 'objectId' in subgoal:
             target_object_id = subgoal['objectId']
             recep_object = get_object(subgoal['receptacleObjectId'], state)
             if recep_object is not None:
                 is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
-                reward, done = (self.rewards['positive'], True) if is_target_in_recep else (self.rewards['negative'], False)
+                if is_target_in_recep:
+                    reward, done = (self.rewards['positive'], True)
         # synthetic task case - synthetic task has no objectId in subgoal
         elif state['lastAction'] == "OpenObject":
             self.target_object_id = state['inventoryObjects'][0]['objectId']
@@ -248,7 +244,8 @@ class OpenObjectAction(BaseAction):
         target_recep = get_object(subgoal['objectId'], state)
         if target_recep is not None:
             is_target_open = target_recep['isOpen']
-            reward, done = (self.rewards['positive'], True) if is_target_open else (self.rewards['negative'], False)
+            if is_target_open:
+                reward, done = (self.rewards['positive'], True)
         return reward, done
 
 
@@ -265,11 +262,12 @@ class CloseObjectAction(BaseAction):
             return reward, done
 
         subgoal = expert_plan[goal_idx]['planner_action']
-        reward, done = self.rewards['negative'], False
+        reward, done = self.rewards['neutral'], False
         target_recep = get_object(subgoal['objectId'], state)
         if target_recep is not None:
             is_target_closed = not target_recep['isOpen']
-            reward, done = (self.rewards['positive'], True) if is_target_closed else (self.rewards['negative'], False)
+            if is_target_closed:
+                reward, done = (self.rewards['positive'], True)
         return reward, done
 
 
@@ -290,7 +288,8 @@ class ToggleObjectAction(BaseAction):
         target_toggle = get_object(subgoal['objectId'], state)
         if target_toggle is not None:
             is_target_toggled = target_toggle['isToggled']
-            reward, done = (self.rewards['positive'], True) if is_target_toggled else (self.rewards['negative'], False)
+            if is_target_toggled:
+                reward, done = (self.rewards['positive'], True) 
         return reward, done
 
 
@@ -311,7 +310,8 @@ class SliceObjectAction(BaseAction):
         target_object = get_object(subgoal['objectId'], state)
         if target_object is not None:
             is_target_sliced = target_object['isSliced']
-            reward, done = (self.rewards['positive'], True) if is_target_sliced else (self.rewards['negative'], False)
+            if is_target_sliced:
+                reward, done = (self.rewards['positive'], True) 
         return reward, done
 
 
@@ -332,7 +332,8 @@ class CleanObjectAction(BaseAction):
         clean_object = get_object(subgoal['cleanObjectId'], state)
         if clean_object is not None:
             is_obj_clean = clean_object['objectId'] in self.env.cleaned_objects
-            reward, done = (self.rewards['positive'], True) if is_obj_clean else (self.rewards['negative'], False)
+            if is_obj_clean:
+                reward, done = (self.rewards['positive'], True) 
         return reward, done
 
 
@@ -354,7 +355,8 @@ class HeatObjectAction(BaseAction):
             heat_object_id = expert_plan[next_put_goal_idx]['planner_action']['objectId']
             heat_object = get_object(heat_object_id, state)
             is_obj_hot = heat_object['objectId'] in self.env.heated_objects
-            reward, done = (self.rewards['positive'], True) if is_obj_hot else (self.rewards['negative'], False)
+            if is_obj_hot:
+                reward, done = (self.rewards['positive'], True)
         return reward, done
 
 
