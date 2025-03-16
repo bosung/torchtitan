@@ -138,49 +138,6 @@ def set_nested_attr(obj, name, value):
     setattr(obj, parts[-1], value)
 
 
-def check_existing_evals(s3_path):
-    # Parse bucket and prefix from s3_path
-    if not s3_path.startswith('s3://'):
-        raise ValueError("S3 path must start with 's3://'")
-    
-    parts = s3_path[5:].split('/', 1)
-    bucket_name = parts[0]
-    prefix = parts[1] if len(parts) > 1 else ''
-    
-    # Ensure prefix ends with a slash if it's not empty
-    if prefix and not prefix.endswith('/'):
-        prefix += '/'
-    
-    # Initialize S3 client
-    s3_client = boto3.client('s3')
-    
-    # List objects in the bucket with the given prefix
-    try:
-        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    except Exception as e:
-        print(f"Error accessing S3: {e}")
-        return 0
-    
-    # Check if directory exists and has files
-    if 'Contents' not in response:
-        return 0
-    
-    # Pattern to match files like test_id-0.json, test_id-1.json, etc.
-    pattern = re.compile(r'test_id-(\d+)\.json$')
-    
-    # Find the highest test_id
-    highest_id = 0
-    for item in response['Contents']:
-        key = item['Key']
-        filename = key.split('/')[-1]
-        match = pattern.search(filename)
-        if match:
-            test_id = int(match.group(1))
-            highest_id = max(highest_id, test_id)
-    
-    return highest_id
-
-
 def simulate_with_expert(env, expert, expert_actions, update=True):
     success = True
 
@@ -402,8 +359,6 @@ def main(
 
             last_event = setup_scene(env, traj_data, reward_type='dense')
 
-            # 1. Don't think about the resume right now
-
             agent.add_log(log_type="step", log_data=agent.step)
             agent.add_log(log_type="total_reward", log_data=agent.total_reward)
             agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
@@ -487,6 +442,8 @@ def main(
                         last_event = setup_scene(env, traj_data, reward_type='dense')
                         # replay by the current sub_goal
                         sim_success = simulate_with_expert(env, expert, prev_expert_actions, update=False)
+                        if not sim_success:
+                            break
 
                     # to set task-dependent rewards
                     env.set_task(traj_data, last_event,
