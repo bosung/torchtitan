@@ -388,58 +388,57 @@ def main(
 
                 for eval_idx, high_idx in enumerate(range(sub_traj['high_pddl_idx'][0], sub_traj['high_pddl_idx'][1])):
                     subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
-                    logger.info(f" ==== evaluating high_idx: {high_idx}, {subgoal_str}")
+                    logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]}")
                     expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
                     
                     cur_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
-                    if expert.step + len(cur_expert_actions) < last_step:
-                        continue
-
-                    #########################################################################
-                    # Agent actions
-                    #########################################################################
-
-                    agent.copy_from_expert(expert)
-                    input_ids, pixel_values = process_input(agent.traj_str, agent.img_list, processor)
-
-                    done = False
                     
-                    while not done:
-                        generated_tokens = generate(model, input_ids, pixel_values, device, act_tok_id, pad_tok_id)
-                        gc.collect()
+                    if last_step <= expert.step + len(cur_expert_actions):
+                        #########################################################################
+                        # Agent actions
+                        #########################################################################
 
-                        output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                        logger.info(f"{color.blue}{output_text}\n{color.reset}")
-
-                        success, done, t_reward = interact_with_env(env, agent, output_text, eval_idx)
-
-                        agent.add_log(log_type="step", log_data=agent.step)
-                        agent.add_log(log_type="total_reward", log_data=agent.total_reward)
-                        agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
-                        agent.add_log(log_type="token_length", log_data=int(input_ids.shape[1]))
-                        agent.add_log(log_type="action", log_data=output_text)
-                        agent.add_log(log_type="subgoal", log_data=subgoal_str)
-                        agent.add_log(log_type="t_reward", log_data=t_reward)
-                        logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, task.finished: {env.task.finished}")
-                        
-                        wandb.log({
-                            f"{model_type}/total_reward": agent.total_reward,
-                            f"{model_type}/agent_reward": agent.agent_only_reward
-                        }, step=agent.step)
-                        
-                        if (not success) or done:
-                            break
-
+                        agent.copy_from_expert(expert)
                         input_ids, pixel_values = process_input(agent.traj_str, agent.img_list, processor)
+
+                        done = False
+                        
+                        while not done:
+                            generated_tokens = generate(model, input_ids, pixel_values, device, act_tok_id, pad_tok_id)
+                            gc.collect()
+
+                            output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                            logger.info(f"{color.blue}{output_text}\n{color.reset}")
+
+                            success, done, t_reward = interact_with_env(env, agent, output_text, eval_idx)
+
+                            agent.add_log(log_type="step", log_data=agent.step)
+                            agent.add_log(log_type="total_reward", log_data=agent.total_reward)
+                            agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
+                            agent.add_log(log_type="token_length", log_data=int(input_ids.shape[1]))
+                            agent.add_log(log_type="action", log_data=output_text)
+                            agent.add_log(log_type="subgoal", log_data=subgoal_str)
+                            agent.add_log(log_type="t_reward", log_data=t_reward)
+                            logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, task.finished: {env.task.finished}")
+                            
+                            wandb.log({
+                                f"{model_type}/total_reward": agent.total_reward,
+                                f"{model_type}/agent_reward": agent.agent_only_reward
+                            }, step=agent.step)
+                            
+                            if (not success) or done:
+                                break
+
+                            input_ids, pixel_values = process_input(agent.traj_str, agent.img_list, processor)
 
                     #########################################################################
                     # Agent action done. Expert's simulation for the GT context 
                     #########################################################################
 
+                    last_event = setup_scene(env, traj_data, reward_type='dense')
                     prev_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < high_idx]
 
                     if len(prev_expert_actions) > 0:
-                        last_event = setup_scene(env, traj_data, reward_type='dense')
                         # replay by the current sub_goal
                         sim_success = simulate_with_expert(env, expert, prev_expert_actions, update=False)
                         if not sim_success:
@@ -463,6 +462,9 @@ def main(
                 s3_path = f"s3://bosung-alfred/eval_logs/{model_type}/{traj_id}.json"
                 # reward_log_file = f"{log_dir}/{traj_id}.json"
                 save_s3(reward_log_file, s3_path)
+
+                if not sim_success:
+                    break
 
                 if int(input_ids.shape[1]) > 300000: # a limit for the standalone model,
                     break
