@@ -155,11 +155,14 @@ def simulate_with_expert(env, expert, expert_actions, update=True):
                 expert.append_img(_image)
 
                 t_reward, done, sg_done = env.get_transition_reward(last_event, expert=True)
+                expert.total_reward += t_reward
                 expert.step += 1
-                print(f"expert.step: {expert.step}, action: {action['action']}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
-                
+                print(f"expert.step: {expert.step}, action: {action['action']}, expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
         elif not last_event['lastActionSuccess'] and (last_event['lastAction'] in ["LookDown", "LookUp"]):
-            pass
+            if update:
+                expert.total_reward += 0.0
+                expert.step += 1
+                print(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
         else:
             print(f"ERROR - expert initialization failed at {t} (action: {action})")
             print(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
@@ -198,7 +201,7 @@ def interact_with_env(env, agent, action, eval_idx):
 
     if not t_success:
         logger.info(f"FAIL -- action: {action}")
-        invalid_action_reward = -0.5
+        invalid_action_reward = 0.0
         return t_success, subgoal_success, invalid_action_reward
 
     agent.append_traj(action + '<|act|>') 
@@ -445,6 +448,7 @@ def main(
                             break
 
                     # to set task-dependent rewards
+                    # TODO
                     env.set_task(traj_data, last_event,
                             sub_traj_idx=sub_traj['sub_traj_idx'],
                             task_info=sub_task['task_info'],
