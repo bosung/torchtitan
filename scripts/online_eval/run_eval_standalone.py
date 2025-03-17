@@ -100,10 +100,10 @@ class TrajManager:
         self.total_reward = expert.total_reward
     
     def load_state(self, last_log):
-        agent.log = last_log
-        agent.step = last_log['step'][-1]
-        agent.total_reward = last_log['total_reward'][-1]
-        agent.agent_only_reward = last_log['agent_only_reward'][-1]
+        self.log = last_log
+        self.step = last_log['step'][-1]
+        self.total_reward = last_log['total_reward'][-1]
+        self.agent_only_reward = last_log['agent_only_reward'][-1]
 
 
 def save_json(filename, data, indent=4):
