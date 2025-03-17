@@ -120,13 +120,17 @@ def save_json(filename, data, indent=4):
 #         stderr=subprocess.DEVNULL
 #     )
 def save_s3(output_dir, s3_path):
-    sync_command = f"aws s3 cp {output_dir} {s3_path}"
-    subprocess.run(
-        sync_command,
-        shell=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
+    try:
+        os.system(f"aws s3 cp {output_dir} {s3_path}")
+    except:
+        logger.info(f"fail to run command: aws s3 cp {output_dir} {s3_path}")
+    # sync_command = f"aws s3 cp {output_dir} {s3_path}"
+    # subprocess.run(
+    #     sync_command,
+    #     shell=True,
+    #     stdout=subprocess.DEVNULL,
+    #     stderr=subprocess.DEVNULL
+    # )
 
 
 def set_nested_attr(obj, name, value):
@@ -157,15 +161,15 @@ def simulate_with_expert(env, expert, expert_actions, update=True):
                 t_reward, done, sg_done = env.get_transition_reward(last_event, expert=True)
                 expert.total_reward += t_reward
                 expert.step += 1
-                print(f"expert.step: {expert.step}, action: {action['action']}, expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+                logger.info(f"expert.step: {expert.step}, action: {action['action']}, expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
         elif not last_event['lastActionSuccess'] and (last_event['lastAction'] in ["LookDown", "LookUp"]):
             if update:
                 expert.total_reward += 0.0
                 expert.step += 1
-                print(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+                logger.info(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
         else:
-            print(f"ERROR - expert initialization failed at {t} (action: {action})")
-            print(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
+            logger.info(f"ERROR - expert initialization failed at {t} (action: {action})")
+            logger.info(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
             success = False
             break
     
