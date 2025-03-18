@@ -501,7 +501,7 @@ def main(
 
                 # end of one sub task. save logs
                 save_json(reward_log_file, agent.log)
-                s3_path = f"s3://bosung-alfred/eval_logs/{model_type}/{traj_id}.json"
+                s3_path = f"s3://bosung-alfred/eval_logs/{model_type}"
                 # reward_log_file = f"{log_dir}/{traj_id}.json"
                 save_s3(reward_log_file, s3_path)
 
