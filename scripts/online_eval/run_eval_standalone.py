@@ -119,11 +119,11 @@ def save_json(filename, data, indent=4):
 #         stdout=subprocess.DEVNULL,
 #         stderr=subprocess.DEVNULL
 #     )
-def save_s3(output_dir, s3_path):
-    try:
-        os.system(f"aws s3 cp {output_dir} {s3_path}")
-    except:
-        logger.info(f"fail to run command: aws s3 cp {output_dir} {s3_path}")
+# def save_s3(output_dir, s3_path):
+#     try:
+#         os.system(f"aws s3 cp {output_dir} {s3_path}")
+#     except:
+#         logger.info(f"fail to run command: aws s3 cp {output_dir} {s3_path}")
     # sync_command = f"aws s3 cp {output_dir} {s3_path}"
     # subprocess.run(
     #     sync_command,
@@ -131,6 +131,40 @@ def save_s3(output_dir, s3_path):
     #     stdout=subprocess.DEVNULL,
     #     stderr=subprocess.DEVNULL
     # )
+
+def save_s3(output_dir, s3_path):
+    # Parse the S3 path to get bucket and prefix
+    s3_parts = s3_path.replace('s3://', '').split('/', 1)
+    bucket_name = s3_parts[0]
+    
+    # Handle case where s3_path might not have a prefix
+    prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+    
+    # Initialize S3 client
+    s3_client = boto3.client('s3')
+    
+    # Check if output_dir is a file or directory
+    if os.path.isfile(output_dir):
+        # If it's a file, just upload the single file
+        file_name = os.path.basename(output_dir)
+        object_name = os.path.join(prefix, file_name) if prefix else file_name
+        s3_client.upload_file(output_dir, bucket_name, object_name)
+    else:
+        # If it's a directory, walk through and upload all files
+        for root, dirs, files in os.walk(output_dir):
+            for file in files:
+                local_path = os.path.join(root, file)
+                
+                # Create the S3 object name by replacing the local path prefix
+                # with the S3 prefix
+                relative_path = os.path.relpath(local_path, output_dir)
+                s3_object_name = os.path.join(prefix, relative_path) if prefix else relative_path
+                
+                # Normalize paths for Windows compatibility
+                s3_object_name = s3_object_name.replace('\\', '/')
+                
+                # Upload the file
+                s3_client.upload_file(local_path, bucket_name, s3_object_name)
 
 
 def set_nested_attr(obj, name, value):
