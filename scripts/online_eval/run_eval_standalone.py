@@ -103,7 +103,7 @@ class TrajManager:
         self.log = last_log
         self.step = last_log['step'][-1]
         self.total_reward = last_log['total_reward'][-1]
-        self.agent_only_reward = last_log['agent_only_reward'][-1]
+        self.agent_only_reward = last_log['agent_reward'][-1]
 
 
 def save_json(filename, data, indent=4):
