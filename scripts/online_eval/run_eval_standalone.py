@@ -200,7 +200,7 @@ def simulate_with_expert(env, expert, expert_actions, update=True):
             if update:
                 expert.total_reward += 0.0
                 expert.step += 1
-                logger.info(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+                logger.info(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
         else:
             logger.info(f"ERROR - expert initialization failed at {t} (action: {action})")
             logger.info(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
