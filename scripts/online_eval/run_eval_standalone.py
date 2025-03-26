@@ -393,8 +393,14 @@ def main(
 
             reward_log_file = f"{log_dir}/{traj_id}.json"
             if os.path.exists(reward_log_file): # resume
-                agent.load_state(json.load(open(reward_log_file)))
+                reward_log = json.load(open(reward_log_file))
+                agent.load_state(reward_log)
                 last_step = agent.log['step'][-1]
+                n_expert_steps = len(traj_data['plan']['low_actions'])
+                if last_step >= n_expert_steps:
+                    continue
+                if reward_log['token_length'][-1] > 300000:
+                    continue
             else:
                 last_step = 0
 
