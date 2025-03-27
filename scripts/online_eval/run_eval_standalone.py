@@ -514,7 +514,7 @@ def main(
                 if not sim_success:
                     break
 
-                if int(input_ids.shape[1]) > 300000: # a limit for the standalone model,
+                if agent.log['token_length'][-1] > 300000: # a limit for the standalone model,
                     break
 
 

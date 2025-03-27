@@ -49,7 +49,7 @@ class ThorEnv():
             scene_name = 'FloorPlan%d' % scene_name_or_num
 
         event = self.client.initialize(scene_name) # controller.reset
-
+        
         event = self.step(dict(
             action='Initialize',
             gridSize=grid_size,

@@ -66,6 +66,10 @@ def get_templated_high_pddl_desc(high_pddl):
     if 'objectId' in high_pddl['planner_action']:
         objectId = high_pddl['planner_action']['objectId']
         obj_name = objectId.split("|")[0]
+    elif a_type == 'PutObject':
+        obj_name = high_pddl['discrete_action']['args'][0]
+        recep_name = high_pddl['discrete_action']['args'][1]
+    
     if 'receptacleObjectId' in high_pddl['planner_action']:
         receptacleObjectId = high_pddl['planner_action']['receptacleObjectId']
         recep_name = receptacleObjectId.split("|")[0]
