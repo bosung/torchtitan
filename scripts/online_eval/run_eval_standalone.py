@@ -49,7 +49,7 @@ from torchtitan.utils import device_module, device_type
 from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
 
 from transformers import AutoConfig, AutoProcessor
-from torchtitan.models.llava_onevision import LlavaOnevisionForConditionalGeneration
+from torchtitan.models.llava_onevision import LlavaOnevisionForConditionalGeneration, llava_onevision_configs
 from huggingface_hub import snapshot_download
 import gc
 
@@ -312,7 +312,7 @@ def main(
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
     deterministic: bool = False,
-    ctx_len: int = 8192
+    ctx_extension: str = None,
 ):
     init_logger()
     color = utils.Color
@@ -341,8 +341,25 @@ def main(
     log_dir = f"eval_logs/{model_type}"
 
     model_dtype = torch.bfloat16
+    llm_config = llava_onevision_configs['7B'] # AutoConfig.from_pretrained
+
+    if ctx_extension:
+        # TODO check original_max_position_embeddings ?
+        logger.info(f"\n\n\t ******* Using dynamic context length: {ctx_extension} *********** \n")
+        llm_config.text_config.rope_scaling = {
+            "rope_type": ctx_extension,  # or 'linear', 'longrope', etc.
+            "factor": 4.0,  # 4x the original context length
+            "original_max_position_embeddings": 32768,  # typical default; adjust based on model
+        }
+        #llm_config.text_config.rope_theta = 10_000_000
+
     model_cls = LlavaOnevisionForConditionalGeneration
-    model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, device_map="auto", low_cpu_mem_usage=True)
+    model = model_cls.from_pretrained(
+        model_name,
+        torch_dtype=model_dtype, 
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        config=llm_config)
         
     init_device = device_type
     #print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
@@ -393,14 +410,15 @@ def main(
 
             reward_log_file = f"{log_dir}/{traj_id}.json"
             if os.path.exists(reward_log_file): # resume
-                reward_log = json.load(open(reward_log_file))
-                agent.load_state(reward_log)
-                last_step = agent.log['step'][-1]
-                n_expert_steps = len(traj_data['plan']['low_actions'])
-                if last_step >= n_expert_steps:
-                    continue
-                if reward_log['token_length'][-1] > 300000:
-                    continue
+                continue
+                # reward_log = json.load(open(reward_log_file))
+                # agent.load_state(reward_log)
+                # last_step = agent.log['step'][-1]
+                # n_expert_steps = len(traj_data['plan']['low_actions'])
+                # if last_step >= n_expert_steps:
+                #     continue
+                # if reward_log['token_length'][-1] > 300000:
+                #     continue
             else:
                 last_step = 0
 
@@ -617,9 +635,8 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--ctx_len",
-        type=int,
-        default=8192,
+        "--ctx_extension",
+        type=str
     )
 
     args = parser.parse_args()
@@ -635,7 +652,7 @@ if __name__ == "__main__":
         top_k=args.top_k,
         seed=args.seed,
         deterministic=args.deterministic,
-        ctx_len=args.ctx_len
+        ctx_extension=args.ctx_extension
     )
 
     if torch.distributed.is_initialized():
