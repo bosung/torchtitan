@@ -205,14 +205,16 @@ class PutObjectAction(BaseAction):
                 if is_target_in_recep:
                     reward, done = (self.rewards['positive'], True)
         # synthetic task case - synthetic task has no objectId in subgoal
-        elif state['lastAction'] == "OpenObject":
+        elif state['lastAction'] == "OpenObject" and len(state['inventoryObjects']) > 0:
             self.target_object_id = state['inventoryObjects'][0]['objectId']
-            return (self.rewards['positive'], True)
+            return self.rewards['positive'], True
         elif state['lastAction'] == "PutObject" and len(state['inventoryObjects']) == 0:
             return self.rewards['positive'], True
         else:
-            if not self.target_object_id:
+            if not self.target_object_id and len(state['inventoryObjects'][0]) > 0:
                 self.target_object_id = state['inventoryObjects'][0]['objectId']
+            else:
+                return reward, done
             
             recep_objname = expert_plan[goal_idx]['discrete_action']['args'][1]
             recep_object = get_objects_with_name_and_prop(recep_objname, 'receptacle', state['objects'])
