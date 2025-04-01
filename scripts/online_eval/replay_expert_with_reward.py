@@ -73,12 +73,14 @@ class TrajManager:
     def __init__(self, init_event=None):
         self.traj_str = ""
         self.img_list = []
-        self.total_reward = 0
-        self.step = 0
-        # self.t_reward_arr = []
-        # self.token_reward_arr = []
-        self.log = defaultdict(list)
+        
         self.last_event = init_event
+        
+        # state
+        self.step = 0
+        self.total_reward = 0
+        self.agent_only_reward = 0
+        self.log = defaultdict(list)
 
     def append_traj(self, traj_piece):
         self.traj_str += traj_piece
@@ -87,7 +89,7 @@ class TrajManager:
         self.img_list.append(new_img)
         self.traj_str += '<image>'
 
-    def add_log(self, log_type: str, log_data: list):
+    def add_log(self, log_type: str, log_data):
         self.log[log_type].append(log_data)
 
     def copy_from_expert(self, expert):
@@ -95,6 +97,13 @@ class TrajManager:
         self.img_list = expert.img_list.copy()
         self.step = expert.step
         self.last_event = expert.last_event
+        self.total_reward = expert.total_reward
+    
+    def load_state(self, last_log):
+        self.log = last_log
+        self.step = last_log['step'][-1]
+        self.total_reward = last_log['total_reward'][-1]
+        self.agent_only_reward = last_log['agent_reward'][-1]
 
 
 def save_json(filename, data, indent=4):
@@ -110,15 +119,6 @@ def save_s3(output_dir, s3_path): # output_dir: outputs/checkpoints/step-xxxx
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-
-
-def set_nested_attr(obj, name, value):
-    """since model.register_buffer() doesn't work on module names with '.',
-       manually set a neste attribute for buffers"""
-    parts = name.split('.')
-    for part in parts[:-1]:
-        obj = getattr(obj, part)
-    setattr(obj, parts[-1], value)
 
 
 def check_existing_evals(s3_path):
@@ -164,95 +164,47 @@ def check_existing_evals(s3_path):
     return highest_id
 
 
-def simulate_with_expert(env, expert, expert_actions, processor):
+def simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True):
     success = True
 
     for t, action in enumerate(expert_actions):
         last_event = env.step(action)
         
         if last_event['lastActionSuccess']:
-            act_str = serialize_action(action)
-            expert.append_traj('<|act|>' + act_str + '<|act|>')
-
-            buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-            buffer.seek(0)
-            _image = Image.open(buffer)
-            expert.append_img(_image)
-
-            input_ids, _ = process_input(expert.traj_str, expert.img_list, processor)
-
-            t_reward, done, sg_done = env.get_transition_reward(last_event, expert=True)
-            expert.step += 1
-            expert.total_reward += t_reward
-            expert.add_log(log_type="token_reward", log_data=[int(input_ids.shape[1]), expert.total_reward])
-            expert.add_log(log_type="t_reward", log_data=[expert.step, expert.total_reward])
-            
-            print(f"expert.step: {expert.step}, action: {action['action']}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
-            
+            if update:
+                t_reward, done, sg_done = env.get_transition_reward(last_event, expert=True)
+                expert.total_reward += t_reward
+                expert.step += 1
+                logger.info(f"expert.step: {expert.step}, action: {action['action']}, expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+                expert.add_log(log_type="step", log_data=expert.step)
+                expert.add_log(log_type="total_reward", log_data=expert.total_reward)
+                expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
+                expert.add_log(log_type="action", log_data=action['action'])
+                expert.add_log(log_type="subgoal", log_data=subgoal_str)
+                expert.add_log(log_type="t_reward", log_data=t_reward)
+                expert.add_log(log_type="high_idx", log_data=high_idx)
+            expert.last_event = last_event
         elif not last_event['lastActionSuccess'] and (last_event['lastAction'] in ["LookDown", "LookUp"]):
-            pass
+            if update:
+                expert.total_reward += 0.0
+                expert.step += 1
+                logger.info(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+                expert.add_log(log_type="step", log_data=expert.step)
+                expert.add_log(log_type="total_reward", log_data=expert.total_reward)
+                expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
+                expert.add_log(log_type="action", log_data=action['action'])
+                expert.add_log(log_type="subgoal", log_data=subgoal_str)
+                expert.add_log(log_type="t_reward", log_data=0.0)
+                expert.add_log(log_type="high_idx", log_data=high_idx)
+            expert.last_event = last_event
         else:
-            print(f"ERROR - expert initialization failed at {t} (action: {action})")
-            print(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
+            logger.info(f"ERROR - expert initialization failed at {t} (action: {action})")
+            logger.info(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
             success = False
             break
     
-    expert.last_event = last_event
-    
     return success
 
-def interact_with_env(env, agent, action, eval_idx):
-
-    subgoal_success = False
-    try:
-        # convert act to api_action
-        if 'Object' in action:
-            _action, obj_id = post_processing_action(action, env.last_event['objects'])
-            if 'PutObject' in action and obj_id:
-                inventory_object_id = env.last_event['inventoryObjects'][0]['objectId']
-                put_action = dict(action="PutObject",
-                            objectId=inventory_object_id,
-                            receptacleObjectId=obj_id,
-                            forceAction=True,
-                            placeStationary=True)
-                last_egent = env.step(put_action)
-            elif obj_id:
-                last_event = env.step(dict(action=_action, objectId=obj_id, forceAction=True))
-            else:
-                last_event = env.step(dict(action=_action, forceAction=True))
-        else:
-            last_event = env.step(dict(action=action, forceAction=True))
-
-        t_success = last_event['lastActionSuccess']
-    except:
-        t_success = False
-
-    if not t_success:
-        logger.info(f"FAIL -- action: {action}")
-        invalid_action_reward = -0.5
-        return t_success, subgoal_success, invalid_action_reward
-
-    agent.append_traj(action + '<|act|>') 
-    
-    buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-    buffer.seek(0)
-    _image = Image.open(buffer)
-    agent.append_img(_image)
-
-    t_reward, t_done, sg_done = env.get_transition_reward(last_event, eval_idx, expert=False) # type: (float, bool)
-
-    if sg_done:
-        return t_success, sg_done, t_reward
-        
-    # if self.t > (self.gt_n_step * 3):
-    #     logger.info(f"fail due to the time step limit -- t: {self.t} > {(self.gt_n_step * 3)} (limit)")
-    #     return t_success, subgoal_success
-
-    # for the next action prediction
-    agent.append_traj('<|act|>')
-    agent.step += 1
-
-    return t_success, subgoal_success, t_reward
 
 def process_input(traj_str, img_list, processor):
     batch = processor(images=img_list, text=traj_str, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
@@ -312,13 +264,15 @@ def main(
     #processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
     processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
 
-    data_dir = snapshot_download(repo_id="bosungkim/long_alfred", repo_type="dataset", local_dir="data/long_traj", allow_patterns="*.json")
-    log_dir = "online_eval/logs"
+    #data_dir = snapshot_download(repo_id="bosungkim/long_alfred", repo_type="dataset", local_dir="data/long_traj", allow_patterns="*.json")
+    #data_dir = "data/long_traj"
+    data_dir = 'data/long_alfred_part1'
+    log_dir = "online_eval/eval_logs_v2/expert"
     
     ###################################################
 
-    replay_success_file = 'online_eval/replay_success.json'
-    replay_success = json.loads(open(replay_success_file).read())
+    #replay_success_file = 'online_eval/replay_success.json'
+    #replay_success = json.loads(open(replay_success_file).read())
 
     act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
     pad_tok_id = processor.tokenizer.pad_token_id
@@ -335,29 +289,16 @@ def main(
                 continue
             
             traj_id = file.split(".")[0]
-            if traj_id in replay_success and not replay_success[traj_id]["success"]:
-                continue
-            if traj_id not in replay_success:
-                continue
-            if traj_id != 'floorplan211_11_324_1739236321':
-                continue
 
             logger.info(f"test id: {traj_id}")
 
-            reward_log_file = f"online_eval/logs/{traj_id}.json"
+            reward_log_file = f"eval_logs/expert/{traj_id}.json"
             if os.path.exists(reward_log_file):
-                reward_log = json.load(open(reward_log_file))
-            else:
-                reward_log = {}
+                logger.info(f"Already evaluated {reward_log_file}")
+                continue
             
-            if model_type in reward_log: # this is resume thing ...
-                log_data = reward_log[model_type]['x_time']
-                last_step = log_data[-1][0]
-            else:
-                reward_log[model_type] = {}
-                log_data = []
-                last_step = 0
-
+            reward_log = {}
+            
             file_path = os.path.join(floorplan_path, file)
             with open(file_path, 'r') as f:
                 traj_data = json.load(f)
@@ -366,16 +307,15 @@ def main(
 
             last_event = setup_scene(env, traj_data, reward_type='dense')
 
-            # 1. Don't think about the resume right now
-
-            total_expert_reward = 0
-            total_agent_reward = 0
-            global_t = 0
-
             expert = TrajManager(init_event=last_event)
 
-            expert.add_log(log_type="token_reward", log_data=[0, total_expert_reward])
-            expert.add_log(log_type="t_reward", log_data=[expert.step, total_expert_reward])
+            expert.add_log(log_type="step", log_data=expert.step)
+            expert.add_log(log_type="total_reward", log_data=expert.total_reward)
+            expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
+            expert.add_log(log_type="token_length", log_data=0)
+            expert.add_log(log_type="action", log_data='INIT')
+            expert.add_log(log_type="subgoal", log_data='INIT')
+            expert.add_log(log_type="t_reward", log_data=0)
 
             for sub_task, sub_traj in zip(traj_data['sub_tasks'], traj_data['sub_trajs']):
                 goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
@@ -398,115 +338,31 @@ def main(
                 #subgoal_idxs = eval_subgoals.get_subgoal_idxs(traj)
 
                 for eval_idx, high_idx in enumerate(range(sub_traj['high_pddl_idx'][0], sub_traj['high_pddl_idx'][1])):
+                    subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
                     logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']}")
-                    expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
+                    #expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
 
                     #########################################################################
                     # Agent action done. Expert's simulation for the GT context 
                     #########################################################################
 
                     expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
-                    sim_success = simulate_with_expert(env, expert, expert_actions, processor)
+                    sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
 
                     if not sim_success:
                         break
 
                 # end of one sub task
-                # log
-                # table = wandb.Table(data=agent.log["t_reward"], columns=["t", "Reward"])
-                # wandb.log({f"{traj_id}/{model_type}": wandb.plot.line(table, "t", "Reward",title="Reward")})
 
-                table = wandb.Table(data=expert.log["token_reward"], columns=["context_length", "Reward"])
-                wandb.log({f"{traj_id}/{model_type}": wandb.plot.line(table, "context_length", "Reward",title="Reward")})
-                
-                if model_type not in reward_log:
-                    reward_log[model_type] = {}
+            if sim_success:
+                save_json(reward_log_file, expert.log)
+                logger.info(f"Replay success: {reward_log_file}")
+            else:
+                logger.info(f"Fail to replay: {traj_id}")
 
-                reward_log[model_type]['x_time'] = expert.log["t_reward"]
-                reward_log[model_type]['x_token'] = expert.log["token_reward"]
-
-                save_json(reward_log_file, reward_log)
-
-                #log_dir = "online_eval/logs"
-                # s3_path = "s3://bosung-alfred/eval_logs/"
-                # save_s3(log_dir, s3_path)
-
-
-@torch.no_grad()
-def generate(model, input_ids, pixel_values, config, device, cp_degree, act_tok_id, pad_tok_id, max_new_tokens=10):
-    input_ids = input_ids.to("cuda")
-    pixel_values = pixel_values.to("cuda")
-    n_image =  torch.tensor([[pixel_values.shape[0]]], device=pixel_values.device)
-    
-    seq_len = input_ids.shape[1]
-    pad_size = max(max_new_tokens, (cp_degree * 2) - (seq_len % (cp_degree * 2)))
-
-    if pad_size > 0:
-        pad_token_tensors = torch.tensor([pad_tok_id] * pad_size, device="cuda")[None, :]
-        input_ids = torch.cat([pad_token_tensors, input_ids], dim=1) 
-
-    with torch.no_grad():
-        inputs_embeds = model.embed(
-            input_ids=input_ids,
-            pixel_values=pixel_values.unsqueeze(0),
-            n_image=n_image,
-        )
-
-    del input_ids
-
-    gc.collect()
-
-    train_context = utils.get_train_context(False, False)
-
-    new_tokens = []
-    for i in range(max_new_tokens):
-        seq_len = inputs_embeds.shape[1]
-        max_seq = (seq_len // ((cp_degree * 2))) * (cp_degree * 2)
-        inputs_embeds = inputs_embeds[:, -max_seq:, :]
-
-        # position_ids = torch.arange(0, inputs_embeds.shape[1], device=inputs_embeds.device)
-        # position_ids = position_ids.unsqueeze(0)
-
-        context_parallel_ctx = (
-            utils.create_context_parallel_ctx(
-                cp_mesh=world_mesh["cp"],
-                cp_buffers=[inputs_embeds, position_ids],
-                cp_seq_dims=[1, 1],
-                cp_no_restore_buffers={inputs_embeds, position_ids},
-                cp_rotate_method=config.experimental.context_parallel_rotate_method,
-            )
-            if cp_degree > 1
-            else None
-        )
-        
-        with train_context(context_parallel_ctx):
-            logits = model.language_model(
-                inputs_embeds=inputs_embeds,
-                #position_ids=position_ids, # you will need later soon
-                use_cache=False,
-                num_logits_to_keep=1)
-
-        new_token, _ = sample(logits, need_probs=True, temperature=1.0)
-        del logits
-
-        if new_token.item() == act_tok_id:
-            break
-        
-        new_tokens.append(new_token.item())
-
-        with torch.no_grad():
-            new_tokens_emb = model.embed(input_ids=new_token.unsqueeze(0))
-
-        if isinstance(new_tokens_emb, DTensor):
-            new_tokens_emb = new_tokens_emb.to_local()
-
-        #tensor_list = [torch.empty(inputs_embeds.shape, device=device, dtype=inputs_embeds.dtype) for _ in range(cp_degree)]
-        #dist.all_gather(tensor_list, inputs_embeds)
-        inputs_embeds = torch.cat([inputs_embeds, new_tokens_emb] , dim=1)
-        #del tensor_list
-
-    gc.collect()
-    return new_tokens
+            #log_dir = "online_eval/logs"
+            # s3_path = "s3://bosung-alfred/eval_logs/"
+            # save_s3(log_dir, s3_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test generation")

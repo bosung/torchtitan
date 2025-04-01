@@ -484,6 +484,7 @@ def main(
                             agent.add_log(log_type="action", log_data=output_text)
                             agent.add_log(log_type="subgoal", log_data=subgoal_str)
                             agent.add_log(log_type="t_reward", log_data=t_reward)
+                            agent.add_log(log_type="high_idx", log_data=high_idx)
                             logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, task.finished: {env.task.finished}")
                             
                             wandb.log({
@@ -525,7 +526,7 @@ def main(
 
                 # end of one sub task. save logs
                 save_json(reward_log_file, agent.log)
-                s3_path = f"s3://bosung-alfred/eval_logs/{model_type}"
+                s3_path = f"s3://bosung-alfred/eval_logs_v2/{model_type}"
                 # reward_log_file = f"{log_dir}/{traj_id}.json"
                 save_s3(reward_log_file, s3_path)
 
