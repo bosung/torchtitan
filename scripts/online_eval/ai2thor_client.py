@@ -108,23 +108,25 @@ class ThorEnv():
         last_event = self.step((dict(action='SetObjectPoses', objectPoses=object_poses)))
         return last_event
 
-    def set_task(self, traj, last_event, sub_traj_idx=None, task_info=None, task_type=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
+    
+    #def set_task(self, traj, last_event, sub_traj_idx=None, task_info=None, task_type=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
+    def set_task(self, task_type, num_subgoals, task_info, last_event, expert_plan=None)
         '''
         set the current task type (one of 7 tasks)
         '''
-        if not task_type:
-            if 'long_horizon_task' in traj:
-                task_type = traj['long_horizon_task']['task_info']['goal']
-            else:
-                task_type = traj['taks_type']
-        
-        self.task = get_task(task_type, traj,
-                    last_event,
-                    sub_traj_idx=sub_traj_idx,
-                    task_info=task_info,
-                    num_subgoals=num_subgoals,
-                    reward_type=reward_type,
-                    max_episode_length=max_episode_length)
+        # if not task_type:
+        #     if 'long_horizon_task' in traj:
+        #         task_type = traj['long_horizon_task']['task_info']['goal']
+        #     else:
+        #         task_type = traj['taks_type']
+        # self.task = get_task(task_type, traj,
+        #             last_event,
+        #             sub_traj_idx=sub_traj_idx,
+        #             task_info=task_info,
+        #             num_subgoals=num_subgoals,
+        #             reward_type=reward_type,
+        #             max_episode_length=max_episode_length)
+        self.task = get_task(task_type, task_info, num_subgoals, last_event)
 
     def step(self, action: dict):
         last_event = self.client.interact(action)
@@ -166,7 +168,6 @@ class ThorEnv():
 
         expert.last_state = last_event
         return last_event
-
 
     def check_post_conditions(self, action):
         '''
@@ -235,189 +236,6 @@ class ThorEnv():
         do nothing
         '''
         super().step(dict(action='Pass'))
-
-    def smooth_move_ahead(self, action, render_settings=None):
-        '''
-        smoother MoveAhead
-        '''
-        if render_settings is None:
-            render_settings = DEFAULT_RENDER_SETTINGS
-        smoothing_factor = constants.RECORD_SMOOTHING_FACTOR
-        new_action = copy.deepcopy(action)
-        new_action['moveMagnitude'] = constants.AGENT_STEP_SIZE / smoothing_factor
-
-        # new_action['renderImage'] = render_settings['renderImage']
-        # new_action['renderClassImage'] = render_settings['renderClassImage']
-        # new_action['renderObjectImage'] = render_settings['renderObjectImage']
-        # new_action['renderDepthImage'] = render_settings['renderDepthImage']
-
-        events = []
-        for xx in range(smoothing_factor - 1):
-            event = self.step(new_action)
-            if event.metadata['lastActionSuccess']:
-                events.append(event)
-
-        event = self.step(new_action)
-        if event.metadata['lastActionSuccess']:
-            events.append(event)
-        return events
-
-    def smooth_rotate(self, action, render_settings=None):
-        '''
-        smoother RotateLeft and RotateRight
-        '''
-        if render_settings is None:
-            render_settings = DEFAULT_RENDER_SETTINGS
-        event = self.last_event
-        horizon = np.round(event.metadata['agent']['cameraHorizon'], 4)
-        position = event.metadata['agent']['position']
-        rotation = event.metadata['agent']['rotation']
-        start_rotation = rotation['y']
-        if action['action'] == 'RotateLeft':
-            end_rotation = (start_rotation - 90)
-        else:
-            end_rotation = (start_rotation + 90)
-
-        events = []
-        for xx in np.arange(.1, 1.0001, .1):
-            if xx < 1:
-                teleport_action = {
-                    'action': 'TeleportFull',
-                    'rotation': np.round(start_rotation * (1 - xx) + end_rotation * xx, 3),
-                    'x': position['x'],
-                    'z': position['z'],
-                    'y': position['y'],
-                    'horizon': horizon,
-                    'standing': True
-                    # 'tempRenderChange': True,
-                    # 'renderNormalsImage': False,
-                    # 'renderImage': render_settings['renderImage'],
-                    # 'renderClassImage': render_settings['renderClassImage'],
-                    # 'renderObjectImage': render_settings['renderObjectImage'],
-                    # 'renderDepthImage': render_settings['renderDepthImage'],
-                }
-                event = self.step(teleport_action)
-            else:
-                teleport_action = {
-                    'action': 'TeleportFull',
-                    'rotation': np.round(start_rotation * (1 - xx) + end_rotation * xx, 3),
-                    'x': position['x'],
-                    'z': position['z'],
-                    'y': position['y'],
-                    'horizon': horizon,
-                    'standing': True
-                }
-                event = self.step(teleport_action)
-
-            if event.metadata['lastActionSuccess']:
-                events.append(event)
-        return events
-
-    def smooth_look(self, action, render_settings=None):
-        '''
-        smoother LookUp and LookDown
-        '''
-        if render_settings is None:
-            render_settings = DEFAULT_RENDER_SETTINGS
-        event = self.last_event
-        start_horizon = event.metadata['agent']['cameraHorizon']
-        rotation = np.round(event.metadata['agent']['rotation']['y'], 4)
-        end_horizon = start_horizon + constants.AGENT_HORIZON_ADJ * (1 - 2 * int(action['action'] == 'LookUp'))
-        position = event.metadata['agent']['position']
-
-        events = []
-        for xx in np.arange(.1, 1.0001, .1):
-            if xx < 1:
-                teleport_action = {
-                    'action': 'TeleportFull',
-                    'rotation': rotation,
-                    'x': position['x'],
-                    'z': position['z'],
-                    'y': position['y'],
-                    'horizon': np.round(start_horizon * (1 - xx) + end_horizon * xx, 3),
-                    'standing': True
-                    # 'tempRenderChange': True,
-                    # 'renderNormalsImage': False,
-                    # 'renderImage': render_settings['renderImage'],
-                    # 'renderClassImage': render_settings['renderClassImage'],
-                    # 'renderObjectImage': render_settings['renderObjectImage'],
-                    # 'renderDepthImage': render_settings['renderDepthImage'],
-                }
-                event = super().step(teleport_action)
-            else:
-                teleport_action = {
-                    'action': 'TeleportFull',
-                    'rotation': rotation,
-                    'x': position['x'],
-                    'z': position['z'],
-                    'y': position['y'],
-                    'horizon': np.round(start_horizon * (1 - xx) + end_horizon * xx, 3),
-                    'standing': True
-                }
-                event = self.step(teleport_action)
-
-            if event.metadata['lastActionSuccess']:
-                events.append(event)
-        return events
-
-    def look_angle(self, angle, render_settings=None):
-        '''
-        look at a specific angle
-        '''
-        if render_settings is None:
-            render_settings = DEFAULT_RENDER_SETTINGS
-        event = self.last_event
-        start_horizon = event.metadata['agent']['cameraHorizon']
-        rotation = np.round(event.metadata['agent']['rotation']['y'], 4)
-        end_horizon = start_horizon + angle
-        position = event.metadata['agent']['position']
-
-        teleport_action = {
-            'action': 'TeleportFull',
-            'rotation': rotation,
-            'x': position['x'],
-            'z': position['z'],
-            'y': position['y'],
-            'horizon': np.round(end_horizon, 3),
-            'tempRenderChange': True,
-            'renderNormalsImage': False,
-            'renderImage': render_settings['renderImage'],
-            'renderClassImage': render_settings['renderClassImage'],
-            'renderObjectImage': render_settings['renderObjectImage'],
-            'renderDepthImage': render_settings['renderDepthImage'],
-        }
-        event = super().step(teleport_action)
-        return event
-
-    def rotate_angle(self, angle, render_settings=None):
-        '''
-        rotate at a specific angle
-        '''
-        if render_settings is None:
-            render_settings = DEFAULT_RENDER_SETTINGS
-        event = self.last_event
-        horizon = np.round(event.metadata['agent']['cameraHorizon'], 4)
-        position = event.metadata['agent']['position']
-        rotation = event.metadata['agent']['rotation']
-        start_rotation = rotation['y']
-        end_rotation = start_rotation + angle
-
-        teleport_action = {
-            'action': 'TeleportFull',
-            'rotation': np.round(end_rotation, 3),
-            'x': position['x'],
-            'z': position['z'],
-            'y': position['y'],
-            'horizon': horizon,
-            'tempRenderChange': True,
-            'renderNormalsImage': False,
-            'renderImage': render_settings['renderImage'],
-            'renderClassImage': render_settings['renderClassImage'],
-            'renderObjectImage': render_settings['renderObjectImage'],
-            'renderDepthImage': render_settings['renderDepthImage'],
-        }
-        event = self.step(teleport_action)
-        return event
 
     def to_thor_api_exec(self, action, object_id="", smooth_nav=False):
         # TODO: parametrized navigation commands

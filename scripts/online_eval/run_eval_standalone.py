@@ -285,17 +285,20 @@ def setup_scene(env, traj, reward_type='dense'):
     object_toggles = traj['scene']['object_toggles']
 
     scene_name = 'FloorPlan%d' % scene_num
+    logger.info(f"Reset env: {scene_name}")
     last_event = env.reset(scene_name)
     last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
 
     # initialize to start position
     last_event = env.step(dict(traj['scene']['init_action']))
-    
-    # setup task for reward
-    env.set_task(traj, last_event, reward_type=reward_type)
 
-    logger.info(f"Setup scene: {scene_name}")
     return last_event
+
+def setup_task(env, task_type, num_subgoals, last_event, expert_plan=None):
+    # setup the target task to obtain appropriate rewards from environemnt
+    env.set_task(task_type, num_subgoals, prev_state=last_event, expert_plan=expert_plan)
+    # env.set_task(traj, last_event, reward_type=reward_type)
+    logger.info(f"Setup task - task_type: {task_type}, num_subgoals: {num_subgoals}, # expert plan: {len(expert_plan)}")
 
 
 @torch.no_grad()
@@ -444,12 +447,15 @@ def main(
                 low_start, low_end = sub_traj['low_pddl_idx']
 
                 # to set task-dependent rewards
-                env.set_task(traj_data, last_event,
-                            sub_traj_idx=sub_traj['sub_traj_idx'],
-                            task_info=sub_task['task_info'],
-                            task_type=sub_task['task_info']['goal'],
-                            num_subgoals=num_subgoals,
-                            reward_type='dense')
+                task_type = sub_task['task_info']['goal']
+                expert_plan = []
+                env.set_task(env, task_type, num_subgoals, last_event, expert_plan=None)
+                # env.set_task(traj_data, last_event,
+                #             sub_traj_idx=sub_traj['sub_traj_idx'],
+                #             task_info=sub_task['task_info'],
+                #             task_type=sub_task['task_info']['goal'],
+                #             num_subgoals=num_subgoals,
+                #             reward_type='dense')
 
                 for eval_idx, high_idx in enumerate(range(sub_traj['high_pddl_idx'][0], sub_traj['high_pddl_idx'][1])):
                     subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']

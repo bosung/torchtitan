@@ -266,7 +266,7 @@ def main(
 
     #data_dir = snapshot_download(repo_id="bosungkim/long_alfred", repo_type="dataset", local_dir="data/long_traj", allow_patterns="*.json")
     #data_dir = "data/long_traj"
-    data_dir = 'data/long_alfred_part1'
+    data_dir = 'data/long_alfred'
     log_dir = "online_eval/eval_logs_v2/expert"
     
     ###################################################

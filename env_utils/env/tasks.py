@@ -11,31 +11,28 @@ class BaseTask(object):
     base class for tasks
     '''
 
-    def __init__(self, traj, last_event,
-                sub_traj_idx=None,
-                task_type=None, task_info=None,
+    def __init__(self, last_event,
+                
+                task_type=None,
                 num_subgoals=None, 
-                reward_type='dense', max_episode_length=2000):
+                reward_type='dense'):
         # settings
-        self.traj = traj
+        # self.traj = traj
 
         self.task_info = task_info
-
-        if task_type:
-            self.task_type = task_type
-        else:
-            self.task_type = self.traj['task_type']
+        self.task_type = task_type
 
         self.max_episode_length = max_episode_length
         self.reward_type = reward_type
         self.step_num = 0
-        if num_subgoals and sub_traj_idx:
-            self.num_subgoals = num_subgoals
-            high_pddl_start, high_pddl_end = self.traj['sub_trajs'][sub_traj_idx]['high_pddl_idx']
-            self.expert_plan = [x for x in self.traj['plan']['high_pddl'][high_pddl_start:high_pddl_end]]
-        else:
-            self.num_subgoals = self.get_num_subgoals(self.traj['plan']['high_pddl'])
-            self.expert_plan = self.traj['plan']['high_pddl']
+        self.num_subgoals = num_subgoals
+        # if num_subgoals and sub_traj_idx:
+        #     self.num_subgoals = num_subgoals
+        #     high_pddl_start, high_pddl_end = self.traj['sub_trajs'][sub_traj_idx]['high_pddl_idx']
+        #     self.expert_plan = [x for x in self.traj['plan']['high_pddl'][high_pddl_start:high_pddl_end]]
+        # else:
+        #     self.num_subgoals = self.get_num_subgoals(self.traj['plan']['high_pddl'])
+        #     self.expert_plan = self.traj['plan']['high_pddl']
 
         # expert_plan = self.traj['plan']['high_pddl']
         # action_type = expert_plan[self.goal_idx]['planner_action']['action']
@@ -549,7 +546,7 @@ class PutObjectTask(BaseTask):
     def reset(self):
         super().reset()
 
-
+'''
 def get_task(task_type, traj, last_event, sub_traj_idx=None, task_info=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
     task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
     
@@ -560,5 +557,17 @@ def get_task(task_type, traj, last_event, sub_traj_idx=None, task_info=None, num
                     task_type=task_type, task_info=task_info, 
                     num_subgoals=num_subgoals,
                     reward_type=reward_type, max_episode_length=max_episode_length)
+    else:
+        raise Exception("Invalid task_type %s" % task_class_str)
+'''
+def get_task(task_type, task_info, num_subgoals, last_event):
+    task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
+    
+    if task_class_str in globals():
+        task = globals()[task_class_str]
+        return task(last_event, 
+                    task_type=task_type,
+                    task_info=task_info,
+                    num_subgoals=num_subgoals)
     else:
         raise Exception("Invalid task_type %s" % task_class_str)
