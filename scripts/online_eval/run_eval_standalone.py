@@ -111,27 +111,6 @@ def save_json(filename, data, indent=4):
         json.dump(data, f, indent=indent)
 
 
-# def save_s3(output_dir, s3_path): # output_dir: outputs/checkpoints/step-xxxx
-#     sync_command = f"aws s3 sync {output_dir} {s3_path}"
-#     subprocess.run(
-#         sync_command,
-#         shell=True,
-#         stdout=subprocess.DEVNULL,
-#         stderr=subprocess.DEVNULL
-#     )
-# def save_s3(output_dir, s3_path):
-#     try:
-#         os.system(f"aws s3 cp {output_dir} {s3_path}")
-#     except:
-#         logger.info(f"fail to run command: aws s3 cp {output_dir} {s3_path}")
-    # sync_command = f"aws s3 cp {output_dir} {s3_path}"
-    # subprocess.run(
-    #     sync_command,
-    #     shell=True,
-    #     stdout=subprocess.DEVNULL,
-    #     stderr=subprocess.DEVNULL
-    # )
-
 def save_s3(output_dir, s3_path):
     # Parse the S3 path to get bucket and prefix
     s3_parts = s3_path.replace('s3://', '').split('/', 1)
@@ -253,10 +232,6 @@ def interact_with_env(env, agent, action, eval_idx):
 
     if sg_done:
         return t_success, sg_done, t_reward
-        
-    # if self.t > (self.gt_n_step * 3):
-    #     logger.info(f"fail due to the time step limit -- t: {self.t} > {(self.gt_n_step * 3)} (limit)")
-    #     return t_success, subgoal_success
 
     # for the next action prediction
     agent.append_traj('<|act|>')
@@ -316,9 +291,8 @@ def main(
     # Tokenizer setup
     processor = AutoProcessor.from_pretrained(model_name)
     tokenizer = processor.tokenizer
-
-    # build dataloader
     #processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
+    processor.tokenizer.model_max_length = 1048576 # or 2097152 for longer inputs
     processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
 
     data_dir = "data/long_alfred"
