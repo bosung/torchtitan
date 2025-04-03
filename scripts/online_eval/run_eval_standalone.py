@@ -55,7 +55,7 @@ import gc
 
 #from env_utils.env.thor_env import ThorEnv
 from ai2thor_client import ThorEnv
-from ai2thor_utils import post_processing_action, get_templated_high_pddl_desc, serialize_action
+from ai2thor_utils import post_processing_action, get_templated_high_pddl_desc, serialize_action, setup_scene
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -274,25 +274,6 @@ def process_input(traj_str, img_list, processor):
     logger.info(f"[Prompt] {traj_str}")
     return batch.input_ids, batch.pixel_values
 
-def setup_scene(env, traj, reward_type='dense'):
-    '''
-    intialize the scene and agent from the task info
-    '''
-    # scene setup
-    scene_num = traj['scene']['scene_num']
-    object_poses = traj['scene']['object_poses']
-    dirty_and_empty = traj['scene']['dirty_and_empty']
-    object_toggles = traj['scene']['object_toggles']
-
-    scene_name = 'FloorPlan%d' % scene_num
-    logger.info(f"Reset env: {scene_name}")
-    last_event = env.reset(scene_name)
-    last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
-
-    # initialize to start position
-    last_event = env.step(dict(traj['scene']['init_action']))
-
-    return last_event
 
 def setup_task(env, task_type, num_subgoals, last_event, expert_plan=None):
     # setup the target task to obtain appropriate rewards from environemnt
@@ -448,15 +429,12 @@ def main(
                 low_start, low_end = sub_traj['low_pddl_idx']
 
                 # to set task-dependent rewards
+                task_info = sub_task['task_info']
                 task_type = sub_task['task_info']['goal']
-                expert_plan = []
-                env.set_task(env, task_type, num_subgoals, last_event, expert_plan=None)
-                # env.set_task(traj_data, last_event,
-                #             sub_traj_idx=sub_traj['sub_traj_idx'],
-                #             task_info=sub_task['task_info'],
-                #             task_type=sub_task['task_info']['goal'],
-                #             num_subgoals=num_subgoals,
-                #             reward_type='dense')
+
+                high_start, high_end = sub_traj['high_pddl_idx']
+                expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
+                env.set_task(task_info, num_subgoals, last_event, expert_plan)
 
                 for eval_idx, high_idx in enumerate(range(sub_traj['high_pddl_idx'][0], sub_traj['high_pddl_idx'][1])):
                     subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
@@ -464,6 +442,10 @@ def main(
                     expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
                     
                     cur_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
+
+                    if len(cur_expert_actions) == 0:
+                        sim_success = False
+                        break
                     
                     if last_step <= expert.step + len(cur_expert_actions):
                         #########################################################################
@@ -509,6 +491,9 @@ def main(
                     #########################################################################
 
                     last_event = setup_scene(env, traj_data, reward_type='dense')
+                    # to set task-dependent rewards
+                    env.set_task(task_info, num_subgoals, last_event, expert_plan)
+
                     prev_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < high_idx]
 
                     if len(prev_expert_actions) > 0:
@@ -516,31 +501,22 @@ def main(
                         sim_success = simulate_with_expert(env, expert, prev_expert_actions, update=False)
                         if not sim_success:
                             break
-
-                    # to set task-dependent rewards
-                    # TODO
-                    env.set_task(traj_data, last_event,
-                            sub_traj_idx=sub_traj['sub_traj_idx'],
-                            task_info=sub_task['task_info'],
-                            task_type=sub_task['task_info']['goal'],
-                            num_subgoals=num_subgoals,
-                            reward_type='dense')
-
+                    
                     sim_success = simulate_with_expert(env, expert, cur_expert_actions, update=True)
 
                     if not sim_success:
                         break
 
                 # end of one sub task. save logs
-                save_json(reward_log_file, agent.log)
-                s3_path = f"s3://bosung-alfred/eval_logs_v2/{model_type}"
-                # reward_log_file = f"{log_dir}/{traj_id}.json"
-                save_s3(reward_log_file, s3_path)
-
-                if not sim_success:
+                if sim_success:
+                    save_json(reward_log_file, agent.log)
+                    s3_path = f"s3://bosung-alfred/eval_logs_v2/{model_type}"
+                    # reward_log_file = f"{log_dir}/{traj_id}.json"
+                    save_s3(reward_log_file, s3_path)
+                else:
                     break
 
-                if agent.log['token_length'][-1] > 300000: # a limit for the standalone model,
+                if agent.log['token_length'][-1] > 300000: # seq_len limit for the standalone model,
                     break
 
 

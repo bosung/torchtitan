@@ -196,35 +196,45 @@ class PutObjectAction(BaseAction):
         subgoal = expert_plan[goal_idx]['planner_action']
 
         reward, done = self.rewards['neutral'], False
-        
+
         if 'objectId' in subgoal:
-            target_object_id = subgoal['objectId']
+            self.target_object_id = subgoal['objectId']
             recep_object = get_object(subgoal['receptacleObjectId'], state)
-            if recep_object is not None:
-                is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
-                if is_target_in_recep:
-                    reward, done = (self.rewards['positive'], True)
-        # synthetic task case - synthetic task has no objectId in subgoal
-        elif state['lastAction'] == "OpenObject" and len(state['inventoryObjects']) > 0:
-            self.target_object_id = state['inventoryObjects'][0]['objectId']
-            return self.rewards['positive'], True
-        elif state['lastAction'] == "PutObject" and len(state['inventoryObjects']) == 0:
-            return self.rewards['positive'], True
         else:
-            if not self.target_object_id and len(state['inventoryObjects'][0]) > 0:
-                self.target_object_id = state['inventoryObjects'][0]['objectId']
-            else:
-                return reward, done
-            
+            # synthetic task case - synthetic task has no objectId in subgoal
             recep_objname = expert_plan[goal_idx]['discrete_action']['args'][1]
             recep_object = get_objects_with_name_and_prop(recep_objname, 'receptacle', state['objects'])
+        #     if recep_object is not None:
+        #         is_target_in_recep = target_object_id in recep_object['receptacleObjectIds']
+        #         if is_target_in_recep:
+        #             reward, done = (self.rewards['positive'], True)
 
-            if len(recep_object) > 0:
-                for ro in recep_object:
-                    if len(ro['receptacleObjectIds']) == 0:
-                        continue
-                    if self.target_object_id in ro['receptacleObjectIds']:
-                        return (self.rewards['positive'], True)
+        if state['lastAction'] == "OpenObject" and len(state['inventoryObjects']) > 0:
+            self.target_object_id = state['inventoryObjects'][0]['objectId']
+            return self.rewards['positive'], False # still False since need to put and close
+        elif prev_state['lastAction'] == "OpenObject" and state['lastAction'] == "PutObject":
+            if recep_object is not None:
+                if self.target_object_id in recep_object['receptacleObjectIds']:
+                    return self.rewards['positive'], False # still False since need to close
+
+        elif prev_state['lastAction'] == "PutObject" and state['lastAction'] == "CloseObject":
+            #self.target_object_id = subgoal['objectId']
+            # recep_object = get_object(subgoal['receptacleObjectId'], state.metadata)
+            if recep_object is not None:
+                if self.target_object_id in recep_object['receptacleObjectIds']:
+                    return self.rewards['positive'], True
+        else:
+            # PutObject without open/close
+            if recep_object is not None:
+                if self.target_object_id in recep_object['receptacleObjectIds']:
+                    return (self.rewards['positive'], True)
+            # if len(recep_object) > 0:
+            #     breakpoint()
+            #     for ro in recep_object:
+            #         if len(ro['receptacleObjectIds']) == 0:
+            #             continue
+            #         if self.target_object_id in ro['receptacleObjectIds']:
+            #             return (self.rewards['positive'], True)
 
         return reward, done
 

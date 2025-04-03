@@ -55,7 +55,7 @@ import gc
 
 #from env_utils.env.thor_env import ThorEnv
 from ai2thor_client import ThorEnv
-from ai2thor_utils import post_processing_action, get_templated_high_pddl_desc, serialize_action
+from ai2thor_utils import post_processing_action, get_templated_high_pddl_desc, serialize_action, setup_scene
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -214,28 +214,28 @@ def process_input(traj_str, img_list, processor):
     logger.info(f"[Prompt] {traj_str}")
     return batch.input_ids, batch.pixel_values
 
-def setup_scene(env, traj, reward_type='dense'):
-    '''
-    intialize the scene and agent from the task info
-    '''
-    # scene setup
-    scene_num = traj['scene']['scene_num']
-    object_poses = traj['scene']['object_poses']
-    dirty_and_empty = traj['scene']['dirty_and_empty']
-    object_toggles = traj['scene']['object_toggles']
+# def setup_scene(env, traj, reward_type='dense'):
+#     '''
+#     intialize the scene and agent from the task info
+#     '''
+#     # scene setup
+#     scene_num = traj['scene']['scene_num']
+#     object_poses = traj['scene']['object_poses']
+#     dirty_and_empty = traj['scene']['dirty_and_empty']
+#     object_toggles = traj['scene']['object_toggles']
 
-    scene_name = 'FloorPlan%d' % scene_num
-    last_event = env.reset(scene_name)
-    last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
+#     scene_name = 'FloorPlan%d' % scene_num
+#     last_event = env.reset(scene_name)
+#     last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
 
-    # initialize to start position
-    last_event = env.step(dict(traj['scene']['init_action']))
+#     # initialize to start position
+#     last_event = env.step(dict(traj['scene']['init_action']))
     
-    # setup task for reward
-    env.set_task(traj, last_event, reward_type=reward_type)
+#     # setup task for reward
+#     env.set_task(traj, last_event, reward_type=reward_type)
 
-    logger.info(f"Setup scene: {scene_name}")
-    return last_event
+#     logger.info(f"Setup scene: {scene_name}")
+#     return last_event
 
 
 @torch.no_grad()
@@ -305,7 +305,7 @@ def main(
 
             ############################################################################
 
-            last_event = setup_scene(env, traj_data, reward_type='dense')
+            last_event = setup_scene(env, traj_data)
 
             expert = TrajManager(init_event=last_event)
 
@@ -316,6 +316,7 @@ def main(
             expert.add_log(log_type="action", log_data='INIT')
             expert.add_log(log_type="subgoal", log_data='INIT')
             expert.add_log(log_type="t_reward", log_data=0)
+            expert.add_log(log_type="high_idx", log_data=0)
 
             for sub_task, sub_traj in zip(traj_data['sub_tasks'], traj_data['sub_trajs']):
                 goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
@@ -328,16 +329,23 @@ def main(
                 num_subgoals = sub_traj['high_pddl_idx'][1] - sub_traj['high_pddl_idx'][0]
                 low_start, low_end = sub_traj['low_pddl_idx']
 
-                env.set_task(traj_data, last_event,
-                            sub_traj_idx=sub_traj['sub_traj_idx'],
-                            task_info=sub_task['task_info'],
-                            task_type=sub_task['task_info']['goal'],
-                            num_subgoals=num_subgoals,
-                            reward_type='dense')
+                # to set task-dependent rewards
+                task_info = sub_task['task_info']
+                task_type = sub_task['task_info']['goal']
+
+                high_start, high_end = sub_traj['high_pddl_idx']
+                expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
+                env.set_task(task_info, num_subgoals, last_event, expert_plan)
+                # env.set_task(traj_data, last_event,
+                #             sub_traj_idx=sub_traj['sub_traj_idx'],
+                #             task_info=sub_task['task_info'],
+                #             task_type=sub_task['task_info']['goal'],
+                #             num_subgoals=num_subgoals,
+                #             reward_type='dense')
 
                 #subgoal_idxs = eval_subgoals.get_subgoal_idxs(traj)
 
-                for eval_idx, high_idx in enumerate(range(sub_traj['high_pddl_idx'][0], sub_traj['high_pddl_idx'][1])):
+                for eval_idx, high_idx in enumerate(range(high_start, high_end)):
                     subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
                     logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']}")
                     #expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
@@ -351,8 +359,9 @@ def main(
 
                     if not sim_success:
                         break
-
                 # end of one sub task
+                if not sim_success:
+                    break
 
             if sim_success:
                 save_json(reward_log_file, expert.log)

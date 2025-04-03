@@ -16,6 +16,7 @@ class ThorEnv():
     def __init__(self):
         self.task = None
         self.last_event = None
+        self.scene_num = None
 
         # internal states
         self.cleaned_objects = set()
@@ -47,6 +48,7 @@ class ThorEnv():
             scene_name = scene_name_or_num
         else:
             scene_name = 'FloorPlan%d' % scene_name_or_num
+        self.scene_num = scene_name_or_num.replace("FloorPlan", "")
 
         event = self.client.initialize(scene_name) # controller.reset
         
@@ -110,7 +112,7 @@ class ThorEnv():
 
     
     #def set_task(self, traj, last_event, sub_traj_idx=None, task_info=None, task_type=None, num_subgoals=None, reward_type='sparse', max_episode_length=2000):
-    def set_task(self, task_type, num_subgoals, task_info, last_event, expert_plan=None)
+    def set_task(self, task_info, num_subgoals, last_event, expert_plan=None):
         '''
         set the current task type (one of 7 tasks)
         '''
@@ -126,7 +128,7 @@ class ThorEnv():
         #             num_subgoals=num_subgoals,
         #             reward_type=reward_type,
         #             max_episode_length=max_episode_length)
-        self.task = get_task(task_type, task_info, num_subgoals, last_event)
+        self.task = get_task(task_info, num_subgoals, last_event, expert_plan)
 
     def step(self, action: dict):
         last_event = self.client.interact(action)
@@ -211,7 +213,7 @@ class ThorEnv():
         if self.task is None:
             raise Exception("WARNING: no task setup for transition_reward")
         else:
-            return self.task.transition_reward(last_event, self, eval_idx, expert)
+            return self.task.transition_reward(last_event, self, eval_idx)
 
     def get_goal_satisfied(self):
         if self.task is None:

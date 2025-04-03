@@ -1,3 +1,5 @@
+from torchtitan.logging import logger
+
 def visible(obj_list):
     return [obj for obj in obj_list if obj['visible']]
 
@@ -128,3 +130,23 @@ def serialize_action(act):
     if 'receptacleObjectId' in act:
         template = template.replace("[receptacle]", act['receptacleObjectId'].split("|")[0])
     return template
+
+def setup_scene(env, traj, reward_type='dense'):
+    '''
+    intialize the scene and agent from the task info
+    '''
+    # scene setup
+    scene_num = traj['scene']['scene_num']
+    object_poses = traj['scene']['object_poses']
+    dirty_and_empty = traj['scene']['dirty_and_empty']
+    object_toggles = traj['scene']['object_toggles']
+
+    scene_name = 'FloorPlan%d' % scene_num
+    logger.info(f"Reset env: {scene_name}")
+    last_event = env.reset(scene_name)
+    last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
+
+    # initialize to start position
+    last_event = env.step(dict(traj['scene']['init_action']))
+
+    return last_event

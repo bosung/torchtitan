@@ -12,17 +12,18 @@ class BaseTask(object):
     '''
 
     def __init__(self, last_event,
-                
+                expert_plan,
                 task_type=None,
+                task_info=None,
                 num_subgoals=None, 
                 reward_type='dense'):
         # settings
         # self.traj = traj
-
+        
         self.task_info = task_info
         self.task_type = task_type
 
-        self.max_episode_length = max_episode_length
+        #self.max_episode_length = max_episode_length
         self.reward_type = reward_type
         self.step_num = 0
         self.num_subgoals = num_subgoals
@@ -34,6 +35,7 @@ class BaseTask(object):
         #     self.num_subgoals = self.get_num_subgoals(self.traj['plan']['high_pddl'])
         #     self.expert_plan = self.traj['plan']['high_pddl']
 
+        self.expert_plan = expert_plan
         # expert_plan = self.traj['plan']['high_pddl']
         # action_type = expert_plan[self.goal_idx]['planner_action']['action']
         
@@ -45,7 +47,8 @@ class BaseTask(object):
 
         # load navigation graph
         self.gt_graph = None
-        self.load_nav_graph()
+        scene_num = self.task_info['scene']
+        self.load_nav_graph(scene_num)
 
         # reward config
         self.reward_config = None
@@ -66,12 +69,12 @@ class BaseTask(object):
         else:
             self.reward_config = REWARD_MAP
 
-    def load_nav_graph(self):
+    def load_nav_graph(self, scene_num):
         '''
         build navigation grid graph
         '''
-        floor_plan = self.traj['scene']['floor_plan']
-        scene_num = self.traj['scene']['scene_num']
+        #floor_plan = self.traj['scene']['floor_plan']
+        #scene_num = self.traj['scene']['scene_num']
         self.gt_graph = graph_obj.Graph(use_gt=True, construct_graph=True, scene_id=scene_num)
 
     def get_num_subgoals(self, high_pddl):
@@ -92,7 +95,7 @@ class BaseTask(object):
         '''
         raise NotImplementedError
 
-    def transition_reward(self, state, env, target_goal_idx=None, expert=False):
+    def transition_reward(self, state, env, target_goal_idx=None):
         '''
         immediate reward given the current state
         '''
@@ -109,6 +112,9 @@ class BaseTask(object):
         if not target_goal_idx:
             target_goal_idx = self.goal_idx
             
+        if target_goal_idx >= len(self.expert_plan):
+            # TODO: some random LookUp action 
+            return reward, False, False
         action_type = self.expert_plan[target_goal_idx]['planner_action']['action']
 
         # subgoal reward
@@ -117,9 +123,10 @@ class BaseTask(object):
             action = get_action(action_type, self.gt_graph, env, self.reward_config)
             sg_reward, sg_done = action.get_reward(state, self.prev_state, self.expert_plan, target_goal_idx)
             reward += sg_reward
-            if sg_done and expert:
+            if sg_done:
                 self.finished += 1
-                if self.goal_idx < target_goal_idx and self.goal_idx + 1 < self.num_subgoals:
+                #if self.goal_idx <= target_goal_idx and self.goal_idx < self.num_subgoals:
+                if self.goal_idx < self.num_subgoals:
                     self.goal_idx += 1
 
         # end task reward
@@ -145,7 +152,8 @@ class BaseTask(object):
 
         # step and check if max_episode_length reached
         self.step_num += 1
-        done = self.goal_idx >= self.num_subgoals or self.step_num >= self.max_episode_length
+        #done = self.goal_idx >= self.num_subgoals #or self.step_num >= self.max_episode_length
+        done = self.goal_idx >= self.num_subgoals or self.goal_finished
         return reward, done, sg_done
 
     def reset(self):
@@ -170,25 +178,24 @@ class BaseTask(object):
         '''
         returns a dictionary of all targets for the task
         '''
-        if 'long_horizon_task' in self.traj:
-            targets = {
-                'object': self.task_info['pickup'],
-                'parent': self.task_info['receptacle'],
-                'toggle': None,
-                'mrecep': self.task_info['movable'],
-            }
-        else:
-            targets = {
-                'object': self.get_target('object_target'),
-                'parent': self.get_target('parent_target'),
-                'toggle': self.get_target('toggle_target'),
-                'mrecep': self.get_target('mrecep_target'),
-            }
+        #if 'long_horizon_task' in self.traj:
+        targets = {
+            'object': self.task_info['pickup'],
+            'parent': self.task_info['receptacle'],
+            'toggle': None,
+            'mrecep': self.task_info['movable'],
+        }
+        # else:
+        #     targets = {
+        #         'object': self.get_target('object_target'),
+        #         'parent': self.get_target('parent_target'),
+        #         'toggle': self.get_target('toggle_target'),
+        #         'mrecep': self.get_target('mrecep_target'),
+        #     }
 
-            # slice exception
-            if 'object_sliced' in self.traj['pddl_params'] and self.traj['pddl_params']['object_sliced']:
-                breakpoint()
-                targets['object'] += 'Sliced'  # Change, e.g., "Apple" -> "AppleSliced" as pickup target.
+        #     # slice exception
+        #     if 'object_sliced' in self.traj['pddl_params'] and self.traj['pddl_params']['object_sliced']:
+        #         targets['object'] += 'Sliced'  # Change, e.g., "Apple" -> "AppleSliced" as pickup target.
 
         return targets
 
@@ -562,12 +569,14 @@ def get_task(task_type, traj, last_event, sub_traj_idx=None, task_info=None, num
     else:
         raise Exception("Invalid task_type %s" % task_class_str)
 '''
-def get_task(task_type, task_info, num_subgoals, last_event):
+def get_task(task_info, num_subgoals, last_event, expert_plan):
+    task_type = task_info['goal']
     task_class_str = task_type.replace('_', ' ').title().replace(' ', '') + "Task"
     
     if task_class_str in globals():
         task = globals()[task_class_str]
-        return task(last_event, 
+        return task(last_event,
+                    expert_plan,
                     task_type=task_type,
                     task_info=task_info,
                     num_subgoals=num_subgoals)
