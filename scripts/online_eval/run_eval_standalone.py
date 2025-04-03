@@ -434,6 +434,7 @@ def main(
             agent.add_log(log_type="action", log_data='INIT')
             agent.add_log(log_type="subgoal", log_data='INIT')
             agent.add_log(log_type="t_reward", log_data=0)
+            agent.add_log(log_type="high_idx", log_data=0)
 
             for sub_task, sub_traj in zip(traj_data['sub_tasks'], traj_data['sub_trajs']):
                 goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
@@ -491,7 +492,7 @@ def main(
                             agent.add_log(log_type="subgoal", log_data=subgoal_str)
                             agent.add_log(log_type="t_reward", log_data=t_reward)
                             agent.add_log(log_type="high_idx", log_data=high_idx)
-                            logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, task.finished: {env.task.finished}")
+                            logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, high_idx: {high_idx}, task.finished: {env.task.finished}")
                             
                             wandb.log({
                                 f"{model_type}/total_reward": agent.total_reward,

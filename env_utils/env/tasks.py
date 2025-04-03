@@ -99,8 +99,10 @@ class BaseTask(object):
         reward = 0
         # goal completed
         if self.goal_finished:
-            done = True
-            return reward, done, True
+            reward = self.reward_config['Generic']['goal_reward']
+            task_done = True
+            subgoal_done = True
+            return reward, task_done, subgoal_done
 
         # get subgoal and action
         # expert_plan = self.traj['plan']['high_pddl']
