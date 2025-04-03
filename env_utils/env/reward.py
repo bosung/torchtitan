@@ -55,14 +55,14 @@ REWARD_MAP = {
     "ToggleObjectAction":
     {
       "positive": 1,
-      "negative": -1,
+      "negative": 0,
       "neutral": 0,
       "invalid_action": 0
     },
     "SliceObjectAction":
     {
       "positive": 1,
-      "negative": -4,
+      "negative": 0,
       "neutral": 0,
       "invalid_action": 0
     },
