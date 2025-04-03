@@ -312,7 +312,6 @@ def main(
             expert.add_log(log_type="step", log_data=expert.step)
             expert.add_log(log_type="total_reward", log_data=expert.total_reward)
             expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
-            expert.add_log(log_type="token_length", log_data=0)
             expert.add_log(log_type="action", log_data='INIT')
             expert.add_log(log_type="subgoal", log_data='INIT')
             expert.add_log(log_type="t_reward", log_data=0)
