@@ -303,6 +303,15 @@ class JobConfig:
             """,
         )
         self.parser.add_argument(
+            "--training.rope_type",
+            type=str
+        )
+        self.parser.add_argument(
+            "--training.rope_factor",
+            type=float,
+            default=1.0
+        )
+        self.parser.add_argument(
             "--experimental.enable_async_tensor_parallel",
             action="store_true",
             help="Whether to apply async tensor parallel (currently only effective when compile is enabled)",

@@ -82,6 +82,21 @@ def save_checkpoint_s3(states, step, output_dir): # output_dir: outputs/checkpoi
     dist.barrier()
 
 
+def warmup_dynamic_rope_scaling(model, seq_len, rope_kwargs):
+    try:
+        layers = model.language_model.model.layers
+        #device = model.device if hasattr(model, "device") else torch.device("cuda")
+
+        for i, layer in enumerate(layers):
+            layer.self_attn.rotary_emb.freq_update(seq_len, rope_kwargs)
+            
+        model.language_model.model.rotary_emb.freq_update(seq_len, rope_kwargs)
+
+        logger.info(f"Warmed up RoPE scaling on {len(layers)} layers with seq_len = {seq_len} rope_kwargs = {rope_kwargs}")
+    except Exception as e:
+        logger.info(f"RoPE warm-up skipped or partial: {e}")
+
+
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
@@ -179,6 +194,7 @@ def main(job_config: JobConfig):
     model_config.norm_type = job_config.model.norm_type
     model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
     model_config.max_seq_len = job_config.training.seq_len
+    text_config = model_config.text_config
 
     logger.info(
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
@@ -186,10 +202,29 @@ def main(job_config: JobConfig):
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name)
+        #logger.info(f"{job_config.training.rope_type}")
+        #buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
+        #logger.info(f"{buffers_dict['language_model.model.layers.0.self_attn.rotary_emb.inv_freq']}")
+        if job_config.training.rope_type:
+            # refer to: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py
+            partial_rotary_factor = text_config.partial_rotary_factor if hasattr(text_config, "partial_rotary_factor") else 1.0
+            head_dim = getattr(text_config, "head_dim", text_config.hidden_size // text_config.num_attention_heads)
+            dim = int(head_dim * partial_rotary_factor)
+            rope_kwargs = {
+                "rope_type": job_config.training.rope_type,  # or 'linear', 'longrope', etc.
+                "factor": job_config.training.rope_factor,  # 4x the original context length
+                #"original_max_position_embeddings": 32768,  # typical default; adjust based on model
+                #"original_max_position_embeddings": model_config.text_config.max_position_embeddings
+                "dim": dim,
+                "base": text_config.rope_theta,
+                "max_position_embeddings": model_config.text_config.max_position_embeddings # original max_len
+            }
+            warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
+            assert model.language_model.model.layers[0].self_attn.rotary_emb.rope_type != 'dynamic'
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
+        #logger.info(f"{buffers_dict['language_model.model.layers.0.self_attn.rotary_emb.inv_freq']}")
         del model
-
-    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+    
     with torch.device("meta"):
         if 'llava' in model_name:
             # using different attn_implementation might matter depending on TP, PP, and CP, etc.
@@ -202,11 +237,7 @@ def main(job_config: JobConfig):
 
     # log model size
     model_param_count = utils.get_num_params(model)
-    # num_flop_per_token = utils.get_num_flop_per_token(
-    #     utils.get_num_params(model),
-    #     model_config,
-    #     job_config.training.seq_len,
-    # )
+    
     logger.info(
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
@@ -232,7 +263,6 @@ def main(job_config: JobConfig):
     else:
         init_device = device_type
         buffer_device = None
-
 
     # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
     train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
@@ -288,6 +318,10 @@ def main(job_config: JobConfig):
     # Restore buffers after loading checkpoint
     for name, buffer in buffers_dict.items():
         set_nested_attr(model, name, buffer.to(device_type))
+    
+    if job_config.training.rope_type:
+        logger.info(f"RoPE rescaling is in use: rope_kwargs: {rope_kwargs}")
+        logger.info(f"Check RoPE: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
 
     metric_logger = build_metric_logger(job_config, parallel_dims)
 
@@ -334,7 +368,7 @@ def main(job_config: JobConfig):
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
-
+            
             # get batch
             data_load_start = time.perf_counter()
             try:

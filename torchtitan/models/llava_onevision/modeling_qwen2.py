@@ -186,6 +186,15 @@ class Qwen2RotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
+    def freq_update(self, seq_len, rope_kwargs):
+        rope_type = rope_kwargs['rope_type']
+        rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
+        inv_freq, self.attention_scaling = rope_init_fn(seq_len=seq_len, **rope_kwargs)
+        #self.register_buffer("inv_freq", inv_freq, persistent=False)
+        with torch.no_grad():
+           self.inv_freq = inv_freq  # this will still show up in .state_dict()
+        self.max_seq_len_cached = seq_len
+
     def _dynamic_frequency_update(self, position_ids, device):
         """
         dynamic RoPE layers should recompute `inv_freq` in the following situations:
@@ -206,6 +215,8 @@ class Qwen2RotaryEmbedding(nn.Module):
 
     @torch.no_grad()
     def forward(self, x, position_ids):
+        # NOTE: `_dynamic_frequency_update` is not considering context parallelism,
+        # this should not be used during training for 64K or 130K, 
         if "dynamic" in self.rope_type:
             self._dynamic_frequency_update(position_ids, device=x.device)
 
