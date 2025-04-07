@@ -308,6 +308,7 @@ def main(
                 "rope_type": ctx_extension,  # 'longrope'
                 "long_factor": 4, # 4x the original context length
                 "short_factor": 1,
+                "factor": 1.0 # factor = config.max_position_embeddings / config.original_max_position_embeddings
                 "original_max_position_embeddings": 32768,  # typical default; adjust based on model
             }
         else:

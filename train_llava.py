@@ -222,6 +222,7 @@ def main(job_config: JobConfig):
             if job_config.training.rope_type == "longrope":
                 rope_kwargs['long_factor'] = job_config.training.rope_factor
                 rope_kwargs['short_factor'] = 1
+                rope_kwargs['factor'] = 1 # https://github.com/huggingface/transformers/blob/b54c2f46891149210dbbe118fca55b1357a47003/src/transformers/modeling_rope_utils.py#L322
 
             warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
             assert model.language_model.model.layers[0].self_attn.rotary_emb.rope_type != 'dynamic'
