@@ -302,13 +302,20 @@ def main(
     llm_config = llava_onevision_configs['7B'] # AutoConfig.from_pretrained
 
     if ctx_extension:
-        # TODO check original_max_position_embeddings ?
         logger.info(f"\n\n\t ******* Using dynamic context length: {ctx_extension} *********** \n")
-        llm_config.text_config.rope_scaling = {
-            "rope_type": ctx_extension,  # or 'linear', 'longrope', etc.
-            "factor": 4.0,  # 4x the original context length
-            "original_max_position_embeddings": 32768,  # typical default; adjust based on model
-        }
+        if ctx_extension == "longrope":
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,  # 'longrope'
+                "long_factor": 4, # 4x the original context length
+                "short_factor": 1
+                "original_max_position_embeddings": 32768,  # typical default; adjust based on model
+            }
+        else:
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,  # or 'linear', 'longrope', etc.
+                "factor": 4.0,  # 4x the original context length
+                "original_max_position_embeddings": 32768,  # typical default; adjust based on model
+            }
         #llm_config.text_config.rope_theta = 10_000_000
 
     model_cls = LlavaOnevisionForConditionalGeneration
