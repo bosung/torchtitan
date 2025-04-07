@@ -219,6 +219,10 @@ def main(job_config: JobConfig):
                 "base": text_config.rope_theta,
                 "max_position_embeddings": model_config.text_config.max_position_embeddings # original max_len
             }
+            if job_config.training.rope_type == "longrope":
+                rope_kwargs['long_factor'] = job_config.training.rope_factor
+                rope_kwargs['short_factor'] = 1
+
             warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
             assert model.language_model.model.layers[0].self_attn.rotary_emb.rope_type != 'dynamic'
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
