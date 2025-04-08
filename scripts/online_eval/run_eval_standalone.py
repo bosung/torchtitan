@@ -272,6 +272,7 @@ def main(
     seed: Optional[int] = None,
     deterministic: bool = False,
     ctx_extension: str = None,
+    ctx_extension_factor: float = None,
 ):
     init_logger()
     color = utils.Color
@@ -306,7 +307,7 @@ def main(
         if ctx_extension == "longrope":
             llm_config.text_config.rope_scaling = {
                 "rope_type": ctx_extension,  # 'longrope'
-                "long_factor": 4, # 4x the original context length
+                "long_factor": ctx_extension_factor, # 4x the original context length
                 "short_factor": 1,
                 "factor": 1.0, # factor = config.max_position_embeddings / config.original_max_position_embeddings
                 "original_max_position_embeddings": 32768,  # typical default; adjust based on model
@@ -314,7 +315,7 @@ def main(
         else:
             llm_config.text_config.rope_scaling = {
                 "rope_type": ctx_extension,  # or 'linear', 'longrope', etc.
-                "factor": 4.0,  # 4x the original context length
+                "factor": ctx_extension_factor,  # 4x the original context length
                 "original_max_position_embeddings": 32768,  # typical default; adjust based on model
             }
         #llm_config.text_config.rope_theta = 10_000_000
@@ -604,6 +605,11 @@ if __name__ == "__main__":
         "--ctx_extension",
         type=str
     )
+    parser.add_argument(
+        "--ctx_extension_factor",
+        type=float,
+        default=4.0
+    )
 
     args = parser.parse_args()
 
@@ -618,7 +624,8 @@ if __name__ == "__main__":
         top_k=args.top_k,
         seed=args.seed,
         deterministic=args.deterministic,
-        ctx_extension=args.ctx_extension
+        ctx_extension=args.ctx_extension,
+        ctx_extension_factor=args.ctx_extension_factor
     )
 
     if torch.distributed.is_initialized():
