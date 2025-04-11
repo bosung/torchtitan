@@ -12,9 +12,10 @@ from torch.utils.data import IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from torchtitan.logging import logger
-#from torchtitan.datasets.hf_datasets import DPAwareDataLoader
 
 from datasets import Dataset, load_dataset
+
+#import torch.distributed as dist
 
 from PIL import Image
 import tarfile
@@ -128,7 +129,7 @@ class ALFREDDataset(IterableDataset, Stateful):
             self._chunk_idx = 0
 
         it = iter(self.traj_data)
-        for _ in range(self._sample_idx):
+        for _ in range(self._sample_idx): # resuming
             next(it)
         return it
 
@@ -139,6 +140,10 @@ class ALFREDDataset(IterableDataset, Stateful):
         input_ids = None
         pixel_values = None
         image_sizes = None
+
+        input_ids_list = []
+        pixel_values_list = []
+        image_sizes_list = []
         
         while True:
             for traj in self._get_data_iter():
@@ -146,20 +151,21 @@ class ALFREDDataset(IterableDataset, Stateful):
 
                 it = iter(chunks)
 
-                for _ in range(len(chunks)):
+                for jk in range(len(chunks)):
                     chunk = next(it)
 
                     output = self.processor(images=chunk['img_list'], text=chunk['lang_input'], return_tensors="pt")
                     cur_chunk_tok_len = output.input_ids.shape[1]
 
                     if sample_token_length + cur_chunk_tok_len >= self.max_seq_len:
+                        input_ids = torch.concat(input_ids_list, dim=1)
                         labels = input_ids.clone()
                         input_ids = input_ids[:, :-1]
                         labels = labels[:, 1:]
 
                         act_tok = False
                         for i, l in enumerate(labels[0]):
-                            if (not act_tok) and l == self.act_tok_id: # 151648
+                            if (not act_tok) and l == self.act_tok_id: # 151648 for llava
                                 act_tok = True
                                 continue
                             
@@ -178,22 +184,24 @@ class ALFREDDataset(IterableDataset, Stateful):
 
                         yield {
                             'input_ids': input_ids,
-                            'pixel_values': pixel_values, 
-                            'image_sizes': image_sizes,
+                            'pixel_values': torch.concat(pixel_values_list, dim=0), 
+                            'image_sizes': torch.concat(image_sizes_list, dim=0),
                             'labels': labels
                         }
 
                         # reset for next loop
-                        input_ids = output.input_ids
-                        pixel_values = output.pixel_values
-                        image_sizes = output.image_sizes
-                        sample_token_length = input_ids.shape[1]
+                        input_ids_list = [output.input_ids]
+                        pixel_values_list = [output.pixel_values]
+                        image_sizes_list = [output.image_sizes]
+                        sample_token_length = output.input_ids.shape[1]
                     else:
+                        input_ids_list.append(output.input_ids)
+                        pixel_values_list.append(output.pixel_values)
+                        image_sizes_list.append(output.image_sizes)
                         sample_token_length += output.input_ids.shape[1]
-
-                        input_ids = torch.concat([input_ids, output.input_ids], dim=1) if isinstance(input_ids, torch.Tensor) else output.input_ids
-                        pixel_values = torch.concat([pixel_values, output.pixel_values], dim=0) if isinstance(pixel_values, torch.Tensor) else output.pixel_values
-                        image_sizes = torch.concat([image_sizes, output.image_sizes], dim=0) if isinstance(image_sizes, torch.Tensor) else output.image_sizes
+                        #input_ids = torch.concat([input_ids, output.input_ids], dim=1) if isinstance(input_ids, torch.Tensor) else output.input_ids
+                        #pixel_values = torch.concat([pixel_values, output.pixel_values], dim=0) if isinstance(pixel_values, torch.Tensor) else output.pixel_values
+                        #image_sizes = torch.concat([image_sizes, output.image_sizes], dim=0) if isinstance(image_sizes, torch.Tensor) else output.image_sizes
                         
                     # reset chunk_idx
                     #self._chunk_idx = 0
