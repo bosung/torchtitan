@@ -160,7 +160,10 @@ def main(job_config: JobConfig):
         processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
         
         # TODO incorporate with build_hf_data_loader
-        from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
+        if job_config.training.seq_len > 131072:
+            from torchtitan.datasets.alfred_dataset_long_ctx import ALFREDDataset, AlfredDataLoader
+        else:
+            from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
         dataset = ALFREDDataset(processor=processor,
             traj_data_dir=traj_data_dir,
             img_data_dir=img_data_dir,
