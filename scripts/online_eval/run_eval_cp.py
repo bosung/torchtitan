@@ -483,11 +483,12 @@ def main(
         env = None
 
     # Iterate over files in the data directory
-    for floorplan_dir in os.listdir(data_dir): # floorplan_dir: floorplan301, floorplan227, ... 
+
+    for floorplan_dir in sorted(os.listdir(data_dir)): # floorplan_dir: floorplan301, floorplan227, ... 
         floorplan_path = os.path.join(data_dir, floorplan_dir)
         if not os.path.isdir(floorplan_path):
             continue
-        for file in os.listdir(floorplan_path):
+        for file in sorted(os.listdir(floorplan_path)):
             if not file.endswith('.json'):
                 continue
             
