@@ -520,6 +520,9 @@ def main(
             last_high_idx = distribute_value(last_high_idx, device)
             dist.barrier()
 
+            if last_high_idx == 0: # init
+                continue # for now we only care for resuming
+
             resume_sub_traj_idx = 0
             if last_high_idx == 0: # init
                 if dist.get_rank() == 0:
