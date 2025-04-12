@@ -15,6 +15,12 @@ from functools import partial
 import re
 import boto3
 from typing import Optional, Tuple
+from collections import defaultdict
+from io import BytesIO
+from PIL import Image
+import subprocess
+import base64
+import io
 
 import torch
 import torch.distributed.checkpoint as dcp
@@ -43,13 +49,14 @@ from torchtitan.utils import device_module, device_type
 from torchtitan.datasets.alfred_dataset import ALFREDDataset, AlfredDataLoader
 
 from transformers import AutoConfig, AutoProcessor
-from torchtitan.models.llava_onevision import LlavaOnevisionForConditionalGeneration
+from torchtitan.models.llava_onevision import LlavaOnevisionForConditionalGeneration, llava_onevision_configs
 from huggingface_hub import snapshot_download
 import gc
 
 #from env_utils.env.thor_env import ThorEnv
 
 from ai2thor_client import ThorEnv
+from ai2thor_utils import post_processing_action, get_templated_high_pddl_desc, serialize_action, setup_scene
 
 # support running w/o installing as package
 wd = Path(__file__).parent.parent.resolve()
@@ -57,7 +64,116 @@ sys.path.append(str(wd))
 
 from generate._generation import sample
 
-AWS_S3_PATH = os.environ['AWS_S3_PATH']
+import wandb
+
+class TrajManager:
+
+    def __init__(self, init_event=None):
+        self.traj_str = ""
+        self.img_list = []
+        
+        self.last_event = init_event
+        
+        # state
+        self.step = 0
+        self.total_reward = 0
+        self.agent_only_reward = 0
+        self.log = defaultdict(list)
+
+    def append_traj(self, traj_piece):
+        self.traj_str += traj_piece
+    
+    def append_img(self, new_img):
+        self.img_list.append(new_img)
+        self.traj_str += '<image>'
+
+    def add_log(self, log_type: str, log_data):
+        self.log[log_type].append(log_data)
+
+    def copy_from_expert(self, expert):
+        self.traj_str = expert.traj_str
+        self.img_list = expert.img_list.copy()
+        self.step = expert.step
+        self.last_event = expert.last_event
+        self.total_reward = expert.total_reward
+    
+    def load_state(self, last_log):
+        self.log = last_log
+        self.step = last_log['step'][-1]
+        self.total_reward = last_log['total_reward'][-1]
+        #self.agent_only_reward = last_log['agent_only_reward'][-1]
+
+
+def save_json(filename, data, indent=4):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=indent)
+
+
+def save_s3(output_dir, s3_path):
+    # Parse the S3 path to get bucket and prefix
+    s3_parts = s3_path.replace('s3://', '').split('/', 1)
+    bucket_name = s3_parts[0]
+    
+    # Handle case where s3_path might not have a prefix
+    prefix = s3_parts[1] if len(s3_parts) > 1 else ''
+    
+    # Initialize S3 client
+    s3_client = boto3.client('s3')
+    
+    # Check if output_dir is a file or directory
+    if os.path.isfile(output_dir):
+        # If it's a file, just upload the single file
+        file_name = os.path.basename(output_dir)
+        object_name = os.path.join(prefix, file_name) if prefix else file_name
+        s3_client.upload_file(output_dir, bucket_name, object_name)
+    else:
+        # If it's a directory, walk through and upload all files
+        for root, dirs, files in os.walk(output_dir):
+            for file in files:
+                local_path = os.path.join(root, file)
+                
+                # Create the S3 object name by replacing the local path prefix
+                # with the S3 prefix
+                relative_path = os.path.relpath(local_path, output_dir)
+                s3_object_name = os.path.join(prefix, relative_path) if prefix else relative_path
+                
+                # Normalize paths for Windows compatibility
+                s3_object_name = s3_object_name.replace('\\', '/')
+                
+                # Upload the file
+                s3_client.upload_file(local_path, bucket_name, s3_object_name)
+
+
+def is_valid_action(last_action: str):
+    """
+    Check if the last action is valid.
+    
+    Args:
+        last_action (str): The last action taken
+    
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    # Define valid actions
+    valid_actions = ['RotateLeft', 'RotateRight', 'MoveAhead', 'LookUp', 'LookDown',
+                    'OpenObject', 'CloseObject', 'PickUpObject', 'PutObject', 'ToggleObjectOn', 
+                    'ToggleObjectOff', 'SliceObject']
+
+    tokens = last_action.split()
+
+    if len(tokens) > 0 and len(tokens[0]) > 0:
+        last_action = tokens[0]
+        if last_action not in valid_actions:
+            return False
+    else:
+        return False
+
+    # for va in valid_actions:
+    #     if va in last_action:
+    #         return True
+    
+    return True
+
 
 def set_nested_attr(obj, name, value):
     """since model.register_buffer() doesn't work on module names with '.',
@@ -66,6 +182,7 @@ def set_nested_attr(obj, name, value):
     for part in parts[:-1]:
         obj = getattr(obj, part)
     setattr(obj, parts[-1], value)
+
 
 def broadcast_tensor(tensor=None, dtype=None, device=None, src_rank=0):
     """
@@ -123,53 +240,143 @@ def broadcast_tensor(tensor=None, dtype=None, device=None, src_rank=0):
     
     return tensor
 
-def check_existing_evals(s3_path):
-    # Parse bucket and prefix from s3_path
-    if not s3_path.startswith('s3://'):
-        raise ValueError("S3 path must start with 's3://'")
+
+def distribute_value(value, device, dtype=None, root=0):
+
+    # Determine the value type and appropriate tensor dtype if not specified
+    if dtype is None:
+        if isinstance(value, bool):
+            dtype = torch.int32  # Using int32 for booleans for better compatibility
+            tensor_value = 1 if value else 0
+        elif isinstance(value, int):
+            dtype = torch.int64  # Using int64 for integers
+            tensor_value = value
+        else:
+            raise TypeError(f"Unsupported value type: {type(value)}. Please specify dtype explicitly.")
+    else:
+        tensor_value = value
     
-    parts = s3_path[5:].split('/', 1)
-    bucket_name = parts[0]
-    prefix = parts[1] if len(parts) > 1 else ''
+    # Create tensor with the appropriate type
+    value_tensor = torch.tensor([tensor_value], dtype=dtype, device=device)
     
-    # Ensure prefix ends with a slash if it's not empty
-    if prefix and not prefix.endswith('/'):
-        prefix += '/'
+    # Broadcast the tensor from root to all processes
+    dist.broadcast(value_tensor, src=root)
     
-    # Initialize S3 client
-    s3_client = boto3.client('s3')
+    # Convert back to the original type and return
+    if isinstance(value, bool):
+        return bool(value_tensor.item())
+    else:
+        return value_tensor.item()
+
+
+def simulate_with_expert(env, expert, expert_actions, update=True):
+    success = True
+
+    for t, action in enumerate(expert_actions):
+        last_event = env.step(action)
+        
+        if last_event['lastActionSuccess']:
+            if update:
+                act_str = serialize_action(action)
+                expert.append_traj('<|act|>' + act_str + '<|act|>')
+
+                buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
+                buffer.seek(0)
+                _image = Image.open(buffer)
+                expert.append_img(_image)
+
+                t_reward, done, sg_done = env.get_transition_reward(last_event, expert=True)
+                expert.total_reward += t_reward
+                expert.step += 1
+                logger.info(f"expert.step: {expert.step}, action: {action['action']}, expert.total_reward: {expert.total_reward}, t_reward: {t_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+        elif not last_event['lastActionSuccess'] and (last_event['lastAction'] in ["LookDown", "LookUp"]):
+            if update:
+                expert.total_reward += 0.0
+                expert.step += 1
+                logger.info(f"expert.step: {expert.step}, action: {action['action']} (but failed), expert.total_reward: {expert.total_reward}, task.goal_idx: {env.task.goal_idx}, task.finished: {env.task.finished}")
+        else:
+            logger.info(f"ERROR - expert initialization failed at {t} (action: {action})")
+            logger.info(f"ERROR - lastAction: {last_event['lastAction']}, err: {last_event['errorMessage']}")
+            success = False
+            break
     
-    # List objects in the bucket with the given prefix
+    expert.last_event = last_event
+    
+    return success
+
+
+def interact_with_env(env, agent, action, eval_idx):
+    # keep only newely generated action part not to call processor for the entire seq
+    new_str = ""
+    new_img = []
+
+    subgoal_success = False
     try:
-        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    except Exception as e:
-        print(f"Error accessing S3: {e}")
-        return 0
+        # convert act to api_action
+        if 'Object' in action:
+            _action, obj_id = post_processing_action(action, env.last_event['objects'])
+            if 'PutObject' in action and obj_id:
+                inventory_object_id = env.last_event['inventoryObjects'][0]['objectId']
+                put_action = dict(action="PutObject",
+                            objectId=inventory_object_id,
+                            receptacleObjectId=obj_id,
+                            forceAction=True,
+                            placeStationary=True)
+                last_egent = env.step(put_action)
+            elif obj_id:
+                last_event = env.step(dict(action=_action, objectId=obj_id, forceAction=True))
+            else:
+                last_event = env.step(dict(action=_action, forceAction=True))
+        else:
+            last_event = env.step(dict(action=action, forceAction=True))
+
+        t_success = last_event['lastActionSuccess']
+    except:
+        t_success = False
+
+    if not t_success:
+        logger.info(f"FAIL -- action: {action}")
+        invalid_action_reward = 0.0
+        return t_success, subgoal_success, invalid_action_reward
+
+    agent.append_traj(action + '<|act|>')
+    new_str += action + '<|act|>'
     
-    # Check if directory exists and has files
-    if 'Contents' not in response:
-        return 0
-    
-    # Pattern to match files like test_id-0.json, test_id-1.json, etc.
-    pattern = re.compile(r'test_id-(\d+)\.json$')
-    
-    # Find the highest test_id
-    highest_id = 0
-    for item in response['Contents']:
-        key = item['Key']
-        filename = key.split('/')[-1]
-        match = pattern.search(filename)
-        if match:
-            test_id = int(match.group(1))
-            highest_id = max(highest_id, test_id)
-    
-    return highest_id
+    buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
+    buffer.seek(0)
+    _image = Image.open(buffer)
+    agent.append_img(_image)
+    new_img.append(_image)
+
+    t_reward, t_done, sg_done = env.get_transition_reward(last_event, eval_idx, expert=False) # type: (float, bool)
+
+    if sg_done:
+        return t_success, sg_done, t_reward
+
+    # for the next action prediction
+    agent.append_traj('<|act|>')
+    new_str += '<|act|>'
+    agent.total_reward += t_reward
+    agent.agent_only_reward += t_reward
+    agent.step += 1
+
+    return t_success, subgoal_success, t_reward, new_str, new_img
+
+
+def process_input(traj_str, img_list, processor):
+    batch = processor(images=img_list, text=traj_str, padding=True, return_tensors="pt").to("cuda", torch.bfloat16)
+    #batch = processor(images=self.img_list, text=prompt, padding=True, return_tensors="pt").to("cuda")
+    logger.info(f"batch.input_ids {batch.input_ids.shape} {batch.input_ids.dtype}")
+    logger.info(f"batch.pixel_values {batch.pixel_values.shape} {batch.pixel_values.dtype}")
+    logger.info(f"[Prompt] {traj_str}")
+    return batch.input_ids, batch.pixel_values
 
 
 @torch.no_grad()
 @record
 def main(
     config_path: str,
+    model_type: str,
     checkpoint_path: str,
     prompt: str,
     *,
@@ -179,10 +386,13 @@ def main(
     top_k: Optional[int] = None,
     seed: Optional[int] = None,
     deterministic: bool = False,
-    ctx_len: int = 8192
+    ctx_extension: str = None,
+    ctx_extension_factor: float = None,
 ):
     init_logger()
     color = utils.Color
+
+    wandb.init(project="long-traj-eval", id=model_type, resume="allow")
 
     # Load configuration from toml file
     config = JobConfig()
@@ -218,20 +428,15 @@ def main(
     # Tokenizer setup
     processor = AutoProcessor.from_pretrained(model_name)
     tokenizer = processor.tokenizer
-
-    # build dataloader
-    processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
-    dataset = ALFREDDataset(
-        processor=processor,
-        traj_data_dir=os.environ['TRAJ_DATA_DIR'],
-        cp_degree=cp_degree,
-        eval=True)
-
-    eval_done_idx = check_existing_evals(s3_path=AWS_S3_PATH)
+    processor.tokenizer.model_max_length = 2097152
+    processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
     
-    # data_loader = AlfredDataLoader(dp_rank, dataset, batch_size=1, world_size=world_size)
+    data_dir = "data/long_alfred"
+    log_dir = f"eval_logs/{model_type}"
 
     model_dtype = torch.bfloat16
+    llm_config = llava_onevision_configs['7B'] # AutoConfig.from_pretrained
+
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model_cls = LlavaOnevisionForConditionalGeneration
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
@@ -245,11 +450,14 @@ def main(
         
     init_device = device_type
     model.to_empty(device=init_device)
+    logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
     state_dict = {"model": model.state_dict()}
     dcp.load(state_dict, checkpoint_id=checkpoint_path)
 
     for name, buffer in buffers_dict.items():
         set_nested_attr(model, name, buffer.to(device_type))
+
+    logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
 
     model.eval()
 
@@ -273,92 +481,248 @@ def main(
         env = ThorEnv()
     else:
         env = None
-    
-    from eval_subgoals import EvalSubgoals
-    eval_subgoals = EvalSubgoals()
 
-    sim_fail_cnt = 0
-    for j, batch in enumerate(dataset):
-        test_id = j
-        # if j <= eval_done_idx:
-        #     continue
-        if j == 1:
-            break
-        
-        traj = batch
+    # Iterate over files in the data directory
+    for floorplan_dir in os.listdir(data_dir): # floorplan_dir: floorplan301, floorplan227, ... 
+        floorplan_path = os.path.join(data_dir, floorplan_dir)
+        if not os.path.isdir(floorplan_path):
+            continue
+        for file in os.listdir(floorplan_path):
+            if not file.endswith('.json'):
+                continue
             
-        subgoal_idxs = eval_subgoals.get_subgoal_idxs(traj)
+            traj_id = file.split(".")[0]
+            logger.info(f"test id: {traj_id}")
+            
+            file_path = os.path.join(floorplan_path, file)
+            with open(file_path, 'r') as f:
+                traj_data = json.load(f)
 
-        for eval_idx in subgoal_idxs:
+            ############################################################################
+
+            expert = TrajManager()
+            agent = TrajManager()
+
             if dist.get_rank() == 0:
-                sim_success = eval_subgoals.simulate_with_expert(env, traj, eval_idx)
+                reward_log_file = f"{log_dir}/{traj_id}.json"
+                if os.path.exists(reward_log_file): # resume
+                    agent.load_state(json.load(open(reward_log_file)))
+                    last_step = agent.log['step'][-1]
+                    last_high_idx = agent.log['high_idx'][-1]
+                else:
+                    last_step = 0
+                    last_high_idx = 0
             else:
-                sim_success = False
+                last_step = 0
+                last_high_idx = 0
 
-            sim_success_tensor = torch.tensor([1 if sim_success else 0], dtype=torch.int32, device=device)
-            dist.broadcast(sim_success_tensor, src=0)
-            sim_success = bool(sim_success_tensor.item())
-            logger.info(f"Test id {j} -- Expert replay success: {sim_success}")
+            last_step = distribute_value(last_step, device)
+            last_high_idx = distribute_value(last_high_idx, device)
             dist.barrier()
 
-            if not sim_success:
-                break # if expert traj fails, even next subgoal cannot make it
-
-            if dist.get_rank() == 0:
-                input_ids, pixel_values = eval_subgoals.process_input(processor)
-            else:
-                input_ids, pixel_values = None, None
-
-            input_ids = broadcast_tensor(input_ids, torch.int32, device, src_rank=0)
-            pixel_values = broadcast_tensor(pixel_values, torch.bfloat16, device, src_rank=0)
-
-            done = False
-            
-            while not done:
-                generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id)
-                gc.collect()
-
+            resume_sub_traj_idx = 0
+            if last_high_idx == 0: # init
                 if dist.get_rank() == 0:
-                    output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                    logger.info(f"{color.blue}{output_text}\n{color.reset}")
-                    success, done = eval_subgoals.interact_with_env(env, output_text, eval_idx)
+                    last_event = setup_scene(env, traj_data, reward_type='dense')
+                    agent.add_log(log_type="step", log_data=agent.step)
+                    agent.add_log(log_type="total_reward", log_data=agent.total_reward)
+                    agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
+                    agent.add_log(log_type="token_length", log_data=0)
+                    agent.add_log(log_type="action", log_data='INIT')
+                    agent.add_log(log_type="subgoal", log_data='INIT')
+                    agent.add_log(log_type="t_reward", log_data=0)
+                    agent.add_log(log_type="high_idx", log_data=0)
                 else:
-                    success, done = None, None
+                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+            else:
+                for ti, subtraj in enumerate(traj_data['sub_trajs']):
+                    start, end = subtraj['high_pddl_idx']
+                    if start <= last_high_idx + 1 <= end:
+                        resume_sub_traj_idx = ti
+                        logger.info(f" ========== [RESUME] resume_sub_traj_idx: {resume_sub_traj_idx} last_high_idx: {last_high_idx }========== ")
+                        break
+            
+            if resume_sub_traj_idx > 0: # proceed experts by resuming point
+                if dist.get_rank() == 0:
+                    last_event = setup_scene(env, traj_data, reward_type='dense')
+                else:
+                    last_event = None
 
-                success_tensor = torch.tensor([1 if success else 0], dtype=torch.int32, device=device)
-                dist.broadcast(success_tensor, src=0)
-                success = bool(success_tensor.item())
+                for sub_task, sub_traj in zip(traj_data['sub_tasks'][:resume_sub_traj_idx], traj_data['sub_trajs'][:resume_sub_traj_idx]):
+                    goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
+                    expert.append_traj(goal_str)
 
-                done_tensor = torch.tensor([1 if done else 0], dtype=torch.int32, device=device)
-                dist.broadcast(done_tensor, src=0)
-                done = bool(done_tensor.item())
+                    if dist.get_rank() == 0:
+                        buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
+                        buffer.seek(0)
+                        _image = Image.open(buffer)
+                        expert.append_img(_image)
+                    else:
+                        expert.append_img("<image>")
 
-                #success = bool(broadcast_tensor(success, torch.int32, device, src_rank=0).item())
-                #done = bool(broadcast_tensor(done, torch.int32, device, src_rank=0).item())
+                    high_start, high_end = sub_traj['high_pddl_idx']
+                    
+                    if dist.get_rank() == 0:
+                        task_info = sub_task['task_info']
+                        num_subgoals = high_end - high_start
+                        expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
+                        env.set_task(task_info, num_subgoals, last_event, expert_plan)
+                    else:
+                        logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
 
-                if (not success) or done:
+                    for eval_idx, high_idx in enumerate(range(high_start, high_end)):
+                        #subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
+                        expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
+                        sim_success = False
+                        if dist.get_rank() == 0:
+                            #sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
+                            sim_success = simulate_with_expert(env, expert, expert_actions, update=True)
+                        else:
+                            logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+
+                        sim_success_tensor = torch.tensor([1 if sim_success else 0], dtype=torch.int32, device=device)
+                        dist.broadcast(sim_success_tensor, src=0)
+                        sim_success = bool(sim_success_tensor.item())
+
+                        if not sim_success:
+                            break
+                    # end of one sub task
+                    if not sim_success:
+                        break
+                if not sim_success:
                     break
+
+            ########################################
+            # Main generation loop
+            ########################################
+
+            for sub_task, sub_traj in zip(traj_data['sub_tasks'][resume_sub_traj_idx:], traj_data['sub_trajs'][resume_sub_traj_idx:]):
+                goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
+                expert.append_traj(goal_str)
                 
                 if dist.get_rank() == 0:
-                    input_ids, pixel_values = eval_subgoals.process_input(processor)
+                    buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
+                    buffer.seek(0)
+                    _image = Image.open(buffer)
+                    expert.append_img(_image)
                 else:
-                    logger.info(f"Rank: {dist.get_rank()} -- waiting for process_input ... ")
-                    input_ids, pixel_values = None, None
+                    expert.append_img("<image>")
+                
+                high_start, high_end = sub_traj['high_pddl_idx']
+                
+                if dist.get_rank() == 0:
+                    # to set task-dependent rewards
+                    num_subgoals = high_end - high_start
+                    task_info = sub_task['task_info']
+                    expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
+                    env.set_task(task_info, num_subgoals, last_event, expert_plan)
+                else:
+                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
 
-                input_ids = broadcast_tensor(input_ids, torch.int32, device, src_rank=0)
-                pixel_values = broadcast_tensor(pixel_values, torch.bfloat16, device, src_rank=0)
+                for eval_idx, high_idx in enumerate(range(high_start, high_end)):
+                    subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
+                    logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]}")
+                    expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
+                    
+                    cur_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
+        
+                    if len(cur_expert_actions) == 0:
+                        sim_success = False
+                        break
 
-            if dist.get_rank() == 0:
-                metrics = eval_subgoals.update_metrics(traj, eval_idx, done, test_id=j)
-            else:
-                logger.info(f"Rank: {dist.get_rank()} -- waiting for update_metrics ... ")
-        # if dist.get_rank() == 0:
-        #     metric_logger.log(metrics, step=j)
-        #     metric_logger.log(eval_subgoals.results, step=j)
-        #     eval_subgoals.sync_metrics_s3(AWS_S3_PATH, test_id)
-        # else:
-        #     logger.info(f"Rank: {dist.get_rank()} -- waiting for S3 sync ... ")
-    
+                    #########################################################################
+                    # Agent actions
+                    #########################################################################
+
+                    if dist.get_rank() == 0:
+                        input_ids, pixel_values = process_input(expert.traj_str, expert.img_list, processor)
+                    else:
+                        logger.info(f"Rank: {dist.get_rank()} -- waiting for process_input ... ")
+                        input_ids, pixel_values = None, None
+
+                    input_ids = broadcast_tensor(input_ids, torch.int32, device, src_rank=0)
+                    pixel_values = broadcast_tensor(pixel_values, torch.bfloat16, device, src_rank=0)
+
+                    done = False
+                    n_invalid_actions = 0
+                    
+                    while not done:
+                        # input embeds as well ? 
+                        generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id)
+                        gc.collect()
+
+                        new_input_ids = None
+                        new_pixel_values = None
+
+                        if dist.get_rank() == 0:
+                            output_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                            logger.info(f"{color.blue}{output_text}\n{color.reset}")
+                            success, done, t_reward, new_str, new_img = interact_with_env(env, agent, output_text, eval_idx)
+
+                            agent.add_log(log_type="step", log_data=agent.step)
+                            agent.add_log(log_type="total_reward", log_data=agent.total_reward)
+                            agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
+                            agent.add_log(log_type="token_length", log_data=int(input_ids.shape[1]))
+                            agent.add_log(log_type="action", log_data=output_text)
+                            agent.add_log(log_type="subgoal", log_data=subgoal_str)
+                            agent.add_log(log_type="t_reward", log_data=t_reward)
+                            agent.add_log(log_type="high_idx", log_data=high_idx)
+                            logger.info(f"agent.step: {agent.step}, token: {int(input_ids.shape[1])}, sg_success: {done}, agent.total_reward: {agent.total_reward}, t_reward: {t_reward}, high_idx: {high_idx}, task.finished: {env.task.finished}")
+                            
+                            wandb.log({
+                                f"{model_type}/total_reward": agent.total_reward,
+                                f"{model_type}/agent_reward": agent.agent_only_reward
+                            }, step=agent.step)
+
+                            # check if the action is valid:
+                            if is_valid_action(output_text):
+                                n_invalid_actions = 0 # reset the count
+                            else:
+                                n_invalid_actions += 1
+
+                            if n_invalid_actions >= 3:
+                                done = True
+                                logger.info(f"ERROR - agent failed to generate valid actions for 3 times, break")
+                                break
+
+                            # get tensors ! 
+                            new_input_ids, new_pixel_values = process_input(new_str, new_img, processor)
+                        else:
+                            success, done = None, None
+
+                        success_tensor = torch.tensor([1 if success else 0], dtype=torch.int32, device=device)
+                        dist.broadcast(success_tensor, src=0)
+                        success = bool(success_tensor.item())
+
+                        done_tensor = torch.tensor([1 if done else 0], dtype=torch.int32, device=device)
+                        dist.broadcast(done_tensor, src=0)
+                        done = bool(done_tensor.item())
+
+                        #success = bool(broadcast_tensor(success, torch.int32, device, src_rank=0).item())
+                        #done = bool(broadcast_tensor(done, torch.int32, device, src_rank=0).item())
+
+                        if (not success) or done:
+                            break
+
+                        dist.broadcast(new_input_ids, src=0)
+                        dist.broadcast(new_pixel_values, src=0)
+
+                        input_ids = torch.concat([input_ids, new_input_ids], dim=1)
+                        pixel_values = torch.concat([pixel_values, new_pixel_values], dim=0)
+                    
+            if not sim_success or not success:
+                break # if expert traj fails, even next subgoal cannot make it
+
+
+                # end of one sub task. save logs
+                if success:
+                    if dist.get_rank() == 0:
+                        save_json(reward_log_file, agent.log)
+                        s3_path = f"s3://bosung-alfred/eval_logs_long/{model_type}"
+                        # reward_log_file = f"{log_dir}/{traj_id}.json"
+                        save_s3(reward_log_file, s3_path)
+                else:
+                    break
 
 @torch.no_grad()
 def generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id, max_new_tokens=10):
@@ -455,6 +819,12 @@ if __name__ == "__main__":
         "--config", type=str, required=True, help="TOML config file path (required)"
     )
     parser.add_argument(
+        "--model_type",
+        type=str,
+        default="expert",
+        help="model name",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=str,
         default="distributed_checkpoints/",
@@ -495,15 +865,20 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--ctx_len",
-        type=int,
-        default=8192,
+        "--ctx_extension",
+        type=str
+    )
+    parser.add_argument(
+        "--ctx_extension_factor",
+        type=float,
+        default=4.0
     )
 
     args = parser.parse_args()
 
     main(
         config_path=args.config,
+        model_type=args.model_type,
         checkpoint_path=args.checkpoint,
         prompt=args.prompt,
         temperature=args.temperature,
@@ -512,7 +887,8 @@ if __name__ == "__main__":
         top_k=args.top_k,
         seed=args.seed,
         deterministic=args.deterministic,
-        ctx_len=args.ctx_len
+        ctx_extension=args.ctx_extension,
+        ctx_extension_factor=args.ctx_extension_factor
     )
 
     if torch.distributed.is_initialized():
