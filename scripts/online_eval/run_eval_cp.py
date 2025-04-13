@@ -685,7 +685,6 @@ def main(
                                 n_invalid_actions += 1
                                 done = True
                                 logger.info(f"ERROR - agent failed to generate valid actions. Break")
-                                break
                             else:
                                 n_invalid_actions = 0 # reset the count
 
@@ -709,7 +708,8 @@ def main(
                         #success = bool(broadcast_tensor(success, torch.int32, device, src_rank=0).item())
                         #done = bool(broadcast_tensor(done, torch.int32, device, src_rank=0).item())
 
-                        if (not success) or done:
+                        if (not success) or done or n_invalid_actions > 0:
+                            logger.info(f"[Rank: {dist.get_rank()}] Break - success: {success} done: {done} n_invalid_actions: {n_invalid_actions}")
                             break
 
                         dist.broadcast(new_input_ids, src=0)
