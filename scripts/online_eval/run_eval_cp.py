@@ -439,7 +439,7 @@ def main(
     model_dtype = torch.bfloat16
     llm_config = llava_onevision_configs['7B'] # AutoConfig.from_pretrained
 
-    if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
+    if 'llava' in model_name and (not ctx_extension): # need to save buffers (position embeddings, layer norm statistics, etc.)
         model_cls = LlavaOnevisionForConditionalGeneration
         model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
@@ -456,8 +456,9 @@ def main(
     state_dict = {"model": model.state_dict()}
     dcp.load(state_dict, checkpoint_id=checkpoint_path)
 
-    for name, buffer in buffers_dict.items():
-        set_nested_attr(model, name, buffer.to(device_type))
+    if not ctx_extension:
+        for name, buffer in buffers_dict.items():
+            set_nested_attr(model, name, buffer.to(device_type))
 
     logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
 
