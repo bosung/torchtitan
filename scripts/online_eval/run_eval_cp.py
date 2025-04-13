@@ -682,6 +682,7 @@ def main(
 
                             # check if the action is valid:
                             if (not is_valid_action(output_text)) or len(new_img) == 0:
+                                n_invalid_actions += 1
                                 done = True
                                 logger.info(f"ERROR - agent failed to generate valid actions. Break")
                                 break
@@ -701,6 +702,10 @@ def main(
                         dist.broadcast(done_tensor, src=0)
                         done = bool(done_tensor.item())
 
+                        n_inv_act_tensor = torch.tensor([n_invalid_actions], dtype=torch.int32, device=device)
+                        dist.broadcast(n_inv_act_tensor, src=0)
+                        n_invalid_actions = int(n_inv_act_tensor.item())
+
                         #success = bool(broadcast_tensor(success, torch.int32, device, src_rank=0).item())
                         #done = bool(broadcast_tensor(done, torch.int32, device, src_rank=0).item())
 
@@ -713,19 +718,49 @@ def main(
                         input_ids = torch.concat([input_ids, new_input_ids], dim=1)
                         pixel_values = torch.concat([pixel_values, new_pixel_values], dim=0)
                     
-            if not sim_success or not success:
-                break # if expert traj fails, even next subgoal cannot make it
+                    #########################################################################
+                    # Agent action done. Expert's simulation for the GT context 
+                    #########################################################################
 
+                    if n_invalid_actions > 0:
+                        break
+
+                    sim_success = False
+                    if dist.get_rank() == 0:
+                        last_event = setup_scene(env, traj_data, reward_type='dense')
+                        # to set task-dependent rewards
+                        env.set_task(task_info, num_subgoals, last_event, expert_plan)
+
+                        prev_expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] < high_idx]
+
+                        if len(prev_expert_actions) > 0:
+                            # replay by the current sub_goal
+                            sim_success = simulate_with_expert(env, expert, prev_expert_actions, update=False)
+                            if not sim_success:
+                                break
+                    
+                        sim_success = simulate_with_expert(env, expert, cur_expert_actions, update=True)
+                    else:
+                        logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+
+                    sim_success_tensor = torch.tensor([1 if sim_success else 0], dtype=torch.int32, device=device)
+                    dist.broadcast(sim_success_tensor, src=0)
+                    sim_success = bool(sim_success_tensor.item())
 
                 # end of one sub task. save logs
-                if success:
-                    if dist.get_rank() == 0:
-                        save_json(reward_log_file, agent.log)
-                        s3_path = f"s3://bosung-alfred/eval_logs_long/{model_type}"
-                        # reward_log_file = f"{log_dir}/{traj_id}.json"
-                        save_s3(reward_log_file, s3_path)
+                if dist.get_rank() == 0:
+                    save_json(reward_log_file, agent.log)
+                    s3_path = f"s3://bosung-alfred/eval_logs_long/{model_type}"
+                    # reward_log_file = f"{log_dir}/{traj_id}.json"
+                    save_s3(reward_log_file, s3_path)
                 else:
+                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                
+                if n_invalid_actions > 0:
                     break
+
+                if not sim_success:
+                    break # if expert traj fails, even next subgoal cannot make it
 
 @torch.no_grad()
 def generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id, max_new_tokens=10):
