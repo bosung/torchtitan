@@ -88,6 +88,8 @@ class TrajManager:
         self.traj_str += '<image>'
 
     def add_log(self, log_type: str, log_data):
+        if log_type not in self.log:
+            self.log[log_type] = list()
         self.log[log_type].append(log_data)
 
     def copy_from_expert(self, expert):
