@@ -741,7 +741,7 @@ def main(
                     
                         sim_success = simulate_with_expert(env, expert, cur_expert_actions, update=True)
                     else:
-                        logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                        logger.info(f"Rank: {dist.get_rank()} -- simulating expert actions ... ")
 
                     sim_success_tensor = torch.tensor([1 if sim_success else 0], dtype=torch.int32, device=device)
                     dist.broadcast(sim_success_tensor, src=0)
@@ -754,9 +754,10 @@ def main(
                     # reward_log_file = f"{log_dir}/{traj_id}.json"
                     save_s3(reward_log_file, s3_path)
                 else:
-                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                    logger.info(f"Rank: {dist.get_rank()} -- uploading to S3 ... ")
                 
                 if n_invalid_actions > 0:
+                    logger.info(f"Rank: {dist.get_rank()} -- n_invalid_actions: {n_invalid_actions}. Break. ")
                     break
 
                 if not sim_success:
