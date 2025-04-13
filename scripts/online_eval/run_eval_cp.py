@@ -576,6 +576,7 @@ def main(
                     else:
                         logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
 
+                    sim_success = False
                     for eval_idx, high_idx in enumerate(range(high_start, high_end)):
                         expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
 
