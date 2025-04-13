@@ -681,14 +681,11 @@ def main(
                             }, step=agent.step)
 
                             # check if the action is valid:
-                            if is_valid_action(output_text):
+                            if is_valid_action(output_text) or len(new_img) == 0:
                                 n_invalid_actions = 0 # reset the count
                             else:
-                                n_invalid_actions += 1
-
-                            if n_invalid_actions >= 3:
                                 done = True
-                                logger.info(f"ERROR - agent failed to generate valid actions for 3 times, break")
+                                logger.info(f"ERROR - agent failed to generate valid actions. Break")
                                 break
 
                             # get tensors ! 
