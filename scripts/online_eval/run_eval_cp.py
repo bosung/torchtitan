@@ -577,9 +577,12 @@ def main(
                         logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
 
                     for eval_idx, high_idx in enumerate(range(high_start, high_end)):
-                        #subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
                         expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
-                        sim_success = False
+
+                        if len(expert_actions) == 0:
+                            sim_success = False
+                            break
+
                         if dist.get_rank() == 0:
                             #sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
                             sim_success = simulate_with_expert(env, expert, expert_actions, update=True)
@@ -595,7 +598,7 @@ def main(
                     # end of one sub task
                     if not sim_success:
                         break
-                if not sim_success:
+                if not sim_success: # break, go to next json file
                     break
 
             ########################################
