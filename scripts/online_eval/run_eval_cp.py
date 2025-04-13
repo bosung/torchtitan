@@ -337,7 +337,7 @@ def interact_with_env(env, agent, action, eval_idx):
     if not t_success:
         logger.info(f"FAIL -- action: {action}")
         invalid_action_reward = 0.0
-        return t_success, subgoal_success, invalid_action_reward
+        return t_success, subgoal_success, invalid_action_reward, new_str, new_img
 
     agent.append_traj(action + '<|act|>')
     new_str += action + '<|act|>'
@@ -351,7 +351,7 @@ def interact_with_env(env, agent, action, eval_idx):
     t_reward, t_done, sg_done = env.get_transition_reward(last_event, eval_idx, expert=False) # type: (float, bool)
 
     if sg_done:
-        return t_success, sg_done, t_reward
+        return t_success, sg_done, t_reward, new_str, new_img
 
     # for the next action prediction
     agent.append_traj('<|act|>')
