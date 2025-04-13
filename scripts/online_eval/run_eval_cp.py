@@ -687,9 +687,8 @@ def main(
                                 logger.info(f"ERROR - agent failed to generate valid actions. Break")
                             else:
                                 n_invalid_actions = 0 # reset the count
-
-                            # get tensors ! 
-                            new_input_ids, new_pixel_values = process_input(new_str, new_img, processor)
+                                # get tensors ! 
+                                new_input_ids, new_pixel_values = process_input(new_str, new_img, processor)
                         else:
                             success, done = None, None
 
