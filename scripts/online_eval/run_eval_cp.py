@@ -540,7 +540,7 @@ def main(
                     agent.add_log(log_type="t_reward", log_data=0)
                     agent.add_log(log_type="high_idx", log_data=0)
                 else:
-                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                    logger.info(f"Rank: {dist.get_rank()} -- setup_scene")
             else:
                 for ti, subtraj in enumerate(traj_data['sub_trajs']):
                     start, end = subtraj['high_pddl_idx']
@@ -575,7 +575,7 @@ def main(
                         expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
                         env.set_task(task_info, num_subgoals, last_event, expert_plan)
                     else:
-                        logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                        logger.info(f"Rank: {dist.get_rank()} -- env.set_task")
 
                     sim_success = False
                     for eval_idx, high_idx in enumerate(range(high_start, high_end)):
@@ -589,7 +589,7 @@ def main(
                             #sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
                             sim_success = simulate_with_expert(env, expert, expert_actions, update=True)
                         else:
-                            logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                            logger.info(f"Rank: {dist.get_rank()} -- simulate_with_expert ")
 
                         sim_success_tensor = torch.tensor([1 if sim_success else 0], dtype=torch.int32, device=device)
                         dist.broadcast(sim_success_tensor, src=0)
@@ -628,7 +628,7 @@ def main(
                     expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
                     env.set_task(task_info, num_subgoals, last_event, expert_plan)
                 else:
-                    logger.info(f"Rank: {dist.get_rank()} -- waiting for the master node ... ")
+                    logger.info(f"[Rank: {dist.get_rank()}] Main generation loop -- env.set_task")
 
                 for eval_idx, high_idx in enumerate(range(high_start, high_end)):
                     subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
