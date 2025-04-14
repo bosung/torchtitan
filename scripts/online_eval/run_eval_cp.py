@@ -453,6 +453,7 @@ def main(
     model.to_empty(device=init_device)
     logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
     state_dict = {"model": model.state_dict()}
+    logger.info(f"loading checkpoint: {checkpoint_path}")
     dcp.load(state_dict, checkpoint_id=checkpoint_path)
 
     if not ctx_extension:
@@ -460,7 +461,7 @@ def main(
             set_nested_attr(model, name, buffer.to(device_type))
 
     logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
-
+    
     model.eval()
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
