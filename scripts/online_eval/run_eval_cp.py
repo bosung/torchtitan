@@ -439,11 +439,27 @@ def main(
     model_dtype = torch.bfloat16
     llm_config = llava_onevision_configs['7B'] # AutoConfig.from_pretrained
 
+    if ctx_extension:
+        logger.info(f"\n\n\t ******* Using dynamic context length: {ctx_extension} *********** \n")
+        if ctx_extension == "longrope":
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,  # 'longrope'
+                "long_factor": ctx_extension_factor, # 4x the original context length
+                "short_factor": 1,
+                "factor": 1.0, # factor = config.max_position_embeddings / config.original_max_position_embeddings
+                "original_max_position_embeddings": 32768,  # typical default; adjust based on model
+            }
+        else:
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,  # or 'linear', 'longrope', etc.
+                "factor": ctx_extension_factor,  # 4x the original context length
+                "original_max_position_embeddings": 32768,  # typical default; adjust based on model
+            }
+
     model_cls = LlavaOnevisionForConditionalGeneration
-    if 'llava' in model_name and (not ctx_extension): # need to save buffers (position embeddings, layer norm statistics, etc.)
-        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
-        buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
-        del model
+    model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, config=llm_config)
+    buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
+    del model
 
     # model
     with torch.device("meta"):
@@ -456,9 +472,8 @@ def main(
     logger.info(f"loading checkpoint: {checkpoint_path}")
     dcp.load(state_dict, checkpoint_id=checkpoint_path)
 
-    if not ctx_extension:
-        for name, buffer in buffers_dict.items():
-            set_nested_attr(model, name, buffer.to(device_type))
+    for name, buffer in buffers_dict.items():
+        set_nested_attr(model, name, buffer.to(device_type))
 
     logger.info(f"rotary_emb.inv_freq: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
     
