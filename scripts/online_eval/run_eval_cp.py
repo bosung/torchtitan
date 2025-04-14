@@ -670,9 +670,7 @@ def main(
 
                     done = False
                     n_invalid_actions = 0
-                    
                     while not done:
-                        # input embeds as well ? 
                         generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id)
                         gc.collect()
 
@@ -723,15 +721,12 @@ def main(
                         dist.broadcast(n_inv_act_tensor, src=0)
                         n_invalid_actions = int(n_inv_act_tensor.item())
 
-                        #success = bool(broadcast_tensor(success, torch.int32, device, src_rank=0).item())
-                        #done = bool(broadcast_tensor(done, torch.int32, device, src_rank=0).item())
-
                         if (not success) or done or n_invalid_actions > 0:
                             logger.info(f"[Rank: {dist.get_rank()}] Break - success: {success} done: {done} n_invalid_actions: {n_invalid_actions}")
                             break
 
-                        dist.broadcast(new_input_ids, src=0)
-                        dist.broadcast(new_pixel_values, src=0)
+                        new_input_ids = broadcast_tensor(new_input_ids, torch.int32, device, src_rank=0)
+                        new_pixel_values = broadcast_tensor(new_pixel_values, torch.bfloat16, device, src_rank=0)
 
                         input_ids = torch.concat([input_ids, new_input_ids], dim=1)
                         pixel_values = torch.concat([pixel_values, new_pixel_values], dim=0)
