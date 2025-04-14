@@ -348,21 +348,20 @@ def interact_with_env(env, agent, action, eval_idx):
     buffer.seek(0)
     _image = Image.open(buffer)
     agent.append_img(_image)
+    new_str += '<image>'
     new_img.append(_image)
 
     t_reward, t_done, sg_done = env.get_transition_reward(last_event, eval_idx, expert=False) # type: (float, bool)
 
-    if sg_done:
+    if sg_done: # done with the subgoal
         return t_success, sg_done, t_reward, new_str, new_img
-
-    # for the next action prediction
-    agent.append_traj('<|act|>')
-    new_str += '<|act|>'
-    agent.total_reward += t_reward
-    agent.agent_only_reward += t_reward
-    agent.step += 1
-
-    return t_success, subgoal_success, t_reward, new_str, new_img
+    else: # for the next action prediction
+        agent.append_traj('<|act|>')
+        new_str += '<|act|>'
+        agent.total_reward += t_reward
+        agent.agent_only_reward += t_reward
+        agent.step += 1
+        return t_success, subgoal_success, t_reward, new_str, new_img
 
 
 def process_input(traj_str, img_list, processor):
