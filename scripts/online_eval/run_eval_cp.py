@@ -671,6 +671,8 @@ def main(
                     done = False
                     n_invalid_actions = 0
                     while not done:
+                        logger.info(f"(generation) input_ids {input_ids.shape} {input_ids.dtype}")
+                        logger.info(f"(generation) pixel_values {pixel_values.shape} {pixel_values.dtype}")
                         generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id)
                         gc.collect()
 
