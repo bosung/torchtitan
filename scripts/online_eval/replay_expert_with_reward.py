@@ -214,29 +214,6 @@ def process_input(traj_str, img_list, processor):
     logger.info(f"[Prompt] {traj_str}")
     return batch.input_ids, batch.pixel_values
 
-# def setup_scene(env, traj, reward_type='dense'):
-#     '''
-#     intialize the scene and agent from the task info
-#     '''
-#     # scene setup
-#     scene_num = traj['scene']['scene_num']
-#     object_poses = traj['scene']['object_poses']
-#     dirty_and_empty = traj['scene']['dirty_and_empty']
-#     object_toggles = traj['scene']['object_toggles']
-
-#     scene_name = 'FloorPlan%d' % scene_num
-#     last_event = env.reset(scene_name)
-#     last_event = env.restore_scene(object_poses, object_toggles, dirty_and_empty)
-
-#     # initialize to start position
-#     last_event = env.step(dict(traj['scene']['init_action']))
-    
-#     # setup task for reward
-#     env.set_task(traj, last_event, reward_type=reward_type)
-
-#     logger.info(f"Setup scene: {scene_name}")
-#     return last_event
-
 
 @torch.no_grad()
 @record
@@ -264,15 +241,14 @@ def main(
     #processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>']})
     processor.tokenizer.add_special_tokens({"additional_special_tokens": ['<|act|>', '<|plan|>', '<|goal|>']})
 
-    #data_dir = snapshot_download(repo_id="bosungkim/long_alfred", repo_type="dataset", local_dir="data/long_traj", allow_patterns="*.json")
     #data_dir = "data/long_traj"
-    data_dir = 'data/long_alfred'
-    log_dir = "online_eval/eval_logs_v2/expert"
+    data_dir = 'data/long_alfred_v2'
+    #log_dir = "online_eval/eval_logs_v2/expert"
     
     ###################################################
 
-    #replay_success_file = 'online_eval/replay_success.json'
-    #replay_success = json.loads(open(replay_success_file).read())
+    replay_success_file = 'replay_success.json'
+    replay_success = json.loads(open(replay_success_file).read())
 
     act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
     pad_tok_id = processor.tokenizer.pad_token_id
@@ -280,97 +256,93 @@ def main(
     env = ThorEnv()
 
     # Iterate over files in the data directory
-    for floorplan_dir in os.listdir(data_dir):
-        floorplan_path = os.path.join(data_dir, floorplan_dir)
-        if not os.path.isdir(floorplan_path):
+    # for floorplan_dir in os.listdir(data_dir):
+    #     floorplan_path = os.path.join(data_dir, floorplan_dir)
+    #     if not os.path.isdir(floorplan_path):
+    #         continue
+    for file in os.listdir(data_dir):
+        if not file.endswith('.json'):
             continue
-        for file in os.listdir(floorplan_path):
-            if not file.endswith('.json'):
-                continue
-            
-            traj_id = file.split(".")[0]
+        
+        traj_id = file.split(".")[0]
 
-            logger.info(f"test id: {traj_id}")
+        logger.info(f"test id: {traj_id}")
 
-            reward_log_file = f"eval_logs/expert/{traj_id}.json"
-            if os.path.exists(reward_log_file):
-                logger.info(f"Already evaluated {reward_log_file}")
-                continue
-            
-            reward_log = {}
-            
-            file_path = os.path.join(floorplan_path, file)
-            with open(file_path, 'r') as f:
-                traj_data = json.load(f)
+        reward_log_file = f"eval_logs_v3/expert_part2/{traj_id}.json"
+        if os.path.exists(reward_log_file):
+            logger.info(f"Already evaluated {reward_log_file}")
+            continue
+        if traj_id in replay_success:
+            logger.info(f"Already replayed {reward_log_file}")
+            continue
+        
+        reward_log = {}
+        
+        file_path = os.path.join(data_dir, file)
+        with open(file_path, 'r') as f:
+            traj_data = json.load(f)
 
-            ############################################################################
+        ############################################################################
 
-            last_event = setup_scene(env, traj_data)
+        last_event = setup_scene(env, traj_data)
 
-            expert = TrajManager(init_event=last_event)
+        expert = TrajManager(init_event=last_event)
 
-            expert.add_log(log_type="step", log_data=expert.step)
-            expert.add_log(log_type="total_reward", log_data=expert.total_reward)
-            expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
-            expert.add_log(log_type="action", log_data='INIT')
-            expert.add_log(log_type="subgoal", log_data='INIT')
-            expert.add_log(log_type="t_reward", log_data=0)
-            expert.add_log(log_type="high_idx", log_data=0)
+        expert.add_log(log_type="step", log_data=expert.step)
+        expert.add_log(log_type="total_reward", log_data=expert.total_reward)
+        expert.add_log(log_type="agent_reward", log_data=expert.agent_only_reward)
+        expert.add_log(log_type="action", log_data='INIT')
+        expert.add_log(log_type="subgoal", log_data='INIT')
+        expert.add_log(log_type="t_reward", log_data=0)
+        expert.add_log(log_type="high_idx", log_data=0)
 
-            for sub_task, sub_traj in zip(traj_data['sub_tasks'], traj_data['sub_trajs']):
-                goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
-                expert.append_traj(goal_str)
-                buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
-                buffer.seek(0)
-                _image = Image.open(buffer)
-                expert.append_img(_image)
+        for sub_task, sub_traj in zip(traj_data['sub_tasks'], traj_data['sub_trajs']):
+            goal_str = f"<|goal|>Your main goal: {sub_task['task_desc']}<|goal|>"
+            expert.append_traj(goal_str)
+            buffer = io.BytesIO(base64.b64decode(last_event['frame_bytes']))
+            buffer.seek(0)
+            _image = Image.open(buffer)
+            expert.append_img(_image)
 
-                num_subgoals = sub_traj['high_pddl_idx'][1] - sub_traj['high_pddl_idx'][0]
-                low_start, low_end = sub_traj['low_pddl_idx']
+            num_subgoals = sub_traj['high_pddl_idx'][1] - sub_traj['high_pddl_idx'][0]
+            low_start, low_end = sub_traj['low_pddl_idx']
 
-                # to set task-dependent rewards
-                task_info = sub_task['task_info']
-                task_type = sub_task['task_info']['goal']
+            # to set task-dependent rewards
+            task_info = sub_task['task_info']
+            task_type = sub_task['task_info']['goal']
 
-                high_start, high_end = sub_traj['high_pddl_idx']
-                expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
-                env.set_task(task_info, num_subgoals, last_event, expert_plan)
-                # env.set_task(traj_data, last_event,
-                #             sub_traj_idx=sub_traj['sub_traj_idx'],
-                #             task_info=sub_task['task_info'],
-                #             task_type=sub_task['task_info']['goal'],
-                #             num_subgoals=num_subgoals,
-                #             reward_type='dense')
+            high_start, high_end = sub_traj['high_pddl_idx']
+            expert_plan = traj_data['plan']['high_pddl'][high_start:high_end]
+            env.set_task(task_info, num_subgoals, last_event, expert_plan)
 
-                #subgoal_idxs = eval_subgoals.get_subgoal_idxs(traj)
+            for eval_idx, high_idx in enumerate(range(high_start, high_end)):
+                subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
+                logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']}")
+                #expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
 
-                for eval_idx, high_idx in enumerate(range(high_start, high_end)):
-                    subgoal_str = traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']
-                    logger.info(f" ==== evaluating high_idx: {high_idx}, {traj_data['plan']['high_pddl'][high_idx]['discrete_action']['action']}")
-                    #expert.append_traj(f"<|plan|>Plan: {get_templated_high_pddl_desc(traj_data['plan']['high_pddl'][high_idx])}<|plan|><|act|>")
+                #########################################################################
+                # Agent action done. Expert's simulation for the GT context 
+                #########################################################################
 
-                    #########################################################################
-                    # Agent action done. Expert's simulation for the GT context 
-                    #########################################################################
+                expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
+                sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
 
-                    expert_actions = [a['api_action'] for a in traj_data['plan']['low_actions'] if a['high_idx'] == high_idx]
-                    sim_success = simulate_with_expert(env, expert, expert_actions, subgoal_str, high_idx, update=True)
-
-                    if not sim_success:
-                        break
-                # end of one sub task
                 if not sim_success:
                     break
+            # end of one sub task
+            if not sim_success:
+                break
 
-            if sim_success:
-                save_json(reward_log_file, expert.log)
-                logger.info(f"Replay success: {reward_log_file}")
-            else:
-                logger.info(f"Fail to replay: {traj_id}")
+        if sim_success:
+            save_json(reward_log_file, expert.log)
+            logger.info(f"Replay success: {reward_log_file}")
+        else:
+            logger.info(f"Fail to replay: {traj_id}")
 
-            #log_dir = "online_eval/logs"
-            # s3_path = "s3://bosung-alfred/eval_logs/"
-            # save_s3(log_dir, s3_path)
+        replay_success[traj_id] = {"success": sim_success, "total_reward": expert.total_reward}
+        print(file_path, sim_success, expert.total_reward)
+        json.dump(replay_success, open(replay_success_file, "w"), indent=4)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test generation")
