@@ -378,8 +378,7 @@ class Qwen2Attention(nn.Module):
         else:
             cos, sin = position_embeddings
         
-        if self.config.training.rope_type != "nope":
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
@@ -621,10 +620,7 @@ class Qwen2SdpaAttention(Qwen2Attention):
             cos, sin = position_embeddings
         
         # TODO
-        if getattr(self.config, "nope", None) is not None:
-            pass
-        else:
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models

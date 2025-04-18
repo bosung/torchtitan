@@ -312,6 +312,15 @@ class JobConfig:
             default=1.0
         )
         self.parser.add_argument(
+            "--training.attn_impl",
+            type=str,
+            default="eager"
+        )
+        self.parser.add_argument(
+            "--training.rope_theta",
+            type=float
+        )
+        self.parser.add_argument(
             "--experimental.enable_async_tensor_parallel",
             action="store_true",
             help="Whether to apply async tensor parallel (currently only effective when compile is enabled)",

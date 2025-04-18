@@ -198,11 +198,16 @@ def main(job_config: JobConfig):
     model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
     model_config.max_seq_len = job_config.training.seq_len
     text_config = model_config.text_config
-    model_config.text_config.nope = False
 
-    logger.info(
-        f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
-    )
+    if job_config.training.rope_theta:
+        model_config.text_config.rope_theta = job_config.training.rope_theta
+
+    # sliding window attention
+    if job_config.training.attn_impl == "flash_attention_2":
+        model_config.attn_impl = "flash_attention_2"
+        model_config.text_config._attn_implementation = "flash_attention_2"
+        model_config.text_config.use_sliding_window = True
+        model_config.text_config.max_window_layers = 0
 
     if 'llava' in model_name: # need to save buffers (position embeddings, layer norm statistics, etc.)
         model = model_cls.from_pretrained(model_name)
@@ -243,7 +248,7 @@ def main(job_config: JobConfig):
         if 'llava' in model_name:
             # using different attn_implementation might matter depending on TP, PP, and CP, etc.
             #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
-            model = model_cls.from_pretrained(model_name, config=model_config)
+            model = model_cls.from_pretrained(model_name, config=model_config, attn_implementation=job_config.training.attn_impl)
             assert len(processor.tokenizer) < model.language_model.lm_head.weight.shape[0]
             assert model.language_model.lm_head.weight.shape[0] % 8 == 0
         else:
@@ -251,6 +256,10 @@ def main(job_config: JobConfig):
 
     # log model size
     model_param_count = utils.get_num_params(model)
+    
+    logger.info(
+        f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
+    )
     
     logger.info(
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
