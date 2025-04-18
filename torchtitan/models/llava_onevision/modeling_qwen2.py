@@ -535,6 +535,7 @@ class Qwen2FlashAttention2(Qwen2Attention):
             and getattr(self.config, "sliding_window", None) is not None
             and self.layer_idx >= self.config.max_window_layers
         ):
+            logger.warning(f"self.layer_idx: {self.layer_idx}, self.config.use_sliding_window: {self.config.use_sliding_window}")
             sliding_window = self.config.sliding_window
         else:
             sliding_window = None
@@ -620,7 +621,7 @@ class Qwen2SdpaAttention(Qwen2Attention):
             cos, sin = position_embeddings
         
         # TODO
-        if self.config.nope:
+        if getattr(self.config, "nope", None) is not None:
             pass
         else:
             query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
