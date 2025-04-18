@@ -198,6 +198,7 @@ def main(job_config: JobConfig):
     model_config.vocab_size = tokenizer.n_words if hasattr(tokenizer, "n_words") else tokenizer.vocab_size
     model_config.max_seq_len = job_config.training.seq_len
     text_config = model_config.text_config
+    model_config.text_config.nope = False
 
     logger.info(
         f"Building {train_spec.name} {job_config.model.flavor} with {model_config}"
@@ -209,6 +210,10 @@ def main(job_config: JobConfig):
         #buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
         #logger.info(f"{buffers_dict['language_model.model.layers.0.self_attn.rotary_emb.inv_freq']}")
         if job_config.training.rope_type:
+            if job_config.training.rope_type == "nope":
+                rope_type = "default"
+                model_config.text_config.nope = True
+
             # refer to: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py
             partial_rotary_factor = text_config.partial_rotary_factor if hasattr(text_config, "partial_rotary_factor") else 1.0
             head_dim = getattr(text_config, "head_dim", text_config.hidden_size // text_config.num_attention_heads)
@@ -227,7 +232,8 @@ def main(job_config: JobConfig):
                 rope_kwargs['short_factor'] = 1
                 rope_kwargs['factor'] = 1 # https://github.com/huggingface/transformers/blob/b54c2f46891149210dbbe118fca55b1357a47003/src/transformers/modeling_rope_utils.py#L322
 
-            warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
+            if job_config.training.rope_type != "nope":
+                warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
             assert model.language_model.model.layers[0].self_attn.rotary_emb.rope_type != 'dynamic'
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
         #logger.info(f"{buffers_dict['language_model.model.layers.0.self_attn.rotary_emb.inv_freq']}")
@@ -237,7 +243,7 @@ def main(job_config: JobConfig):
         if 'llava' in model_name:
             # using different attn_implementation might matter depending on TP, PP, and CP, etc.
             #model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, attn_implementation="eager")
-            model = model_cls.from_pretrained(model_name)
+            model = model_cls.from_pretrained(model_name, config=model_config)
             assert len(processor.tokenizer) < model.language_model.lm_head.weight.shape[0]
             assert model.language_model.lm_head.weight.shape[0] % 8 == 0
         else:
@@ -327,7 +333,7 @@ def main(job_config: JobConfig):
     for name, buffer in buffers_dict.items():
         set_nested_attr(model, name, buffer.to(device_type))
     
-    if job_config.training.rope_type:
+    if job_config.training.rope_type and job_config.training.rope_type != "nope":
         logger.info(f"RoPE rescaling is in use: rope_kwargs: {rope_kwargs}")
         logger.info(f"Check RoPE: {model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq}")
 
