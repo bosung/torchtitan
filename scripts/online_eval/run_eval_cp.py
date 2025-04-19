@@ -533,7 +533,7 @@ def main(
                 start, end = subtraj['low_pddl_idx']
                 if start <= last_step <= end:
                     resume_sub_traj_idx = ti
-                    logger.info(f" ========== [RESUME] resume_sub_traj_idx: {resume_sub_traj_idx} last_high_idx: {last_high_idx }========== ")
+                    logger.info(f" ========== [RESUME] resume_sub_traj_idx: {resume_sub_traj_idx} | {subtraj['high_pddl_idx']} ========== ")
                     break
 
             ########################################
