@@ -273,6 +273,7 @@ def main(
     deterministic: bool = False,
     ctx_extension: str = None,
     ctx_extension_factor: float = None,
+    flash_attn: bool = False,
 ):
     init_logger()
     color = utils.Color
@@ -320,13 +321,15 @@ def main(
             }
         #llm_config.text_config.rope_theta = 10_000_000
 
+    
     model_cls = LlavaOnevisionForConditionalGeneration
     model = model_cls.from_pretrained(
         model_name,
         torch_dtype=model_dtype, 
         device_map="auto",
         low_cpu_mem_usage=True,
-        config=llm_config)
+        config=llm_config,
+        attn_implementation="flash_attention_2" if flash_attn else "eager")
         
     init_device = device_type
     #print(model.language_model.model.layers[0].self_attn.rotary_emb.inv_freq)
@@ -595,13 +598,6 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default="", help="Input prompt")
 
     parser.add_argument(
-        "--out",
-        action="store_true",
-        default=False,
-        help="If specified, prints the report to stdout. Defaults to no output.",
-    )
-
-    parser.add_argument(
         "--ctx_extension",
         type=str
     )
@@ -610,6 +606,11 @@ if __name__ == "__main__":
         type=float,
         default=4.0
     )
+    parser.add_argument(
+        "--flash_attn",
+        action="store_true"
+    )
+
 
     args = parser.parse_args()
 
@@ -625,7 +626,8 @@ if __name__ == "__main__":
         seed=args.seed,
         deterministic=args.deterministic,
         ctx_extension=args.ctx_extension,
-        ctx_extension_factor=args.ctx_extension_factor
+        ctx_extension_factor=args.ctx_extension_factor,
+        flash_attn=args.flash_attn
     )
 
     if torch.distributed.is_initialized():
