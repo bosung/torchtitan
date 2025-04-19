@@ -462,7 +462,7 @@ def main(
 
     # model
     with torch.device("meta"):
-        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype)
+        model = model_cls.from_pretrained(model_name, torch_dtype=model_dtype, config=llm_config)
         
     init_device = device_type
     model.to_empty(device=init_device)
@@ -521,49 +521,26 @@ def main(
             expert = TrajManager()
             agent = TrajManager()
 
-            if dist.get_rank() == 0:
-                reward_log_file = f"{log_dir}/{traj_id}.json"
-                if os.path.exists(reward_log_file): # resume
-                    agent.load_state(json.load(open(reward_log_file)))
-                    last_step = agent.log['step'][-1]
-                    last_high_idx = agent.log['high_idx'][-1]
-                else:
-                    last_step = 0
-                    last_high_idx = 0
-            else:
-                last_step = 0
-                last_high_idx = 0
+            reward_log_file = f"{log_dir}/{traj_id}.json"
 
-            last_step = distribute_value(last_step, device)
-            last_high_idx = distribute_value(last_high_idx, device)
-            dist.barrier()
+            if os.path.exists(reward_log_file):
+                continue
 
-            if last_high_idx == 0: # init
-                continue # for now we only care for resuming
+            last_step = 200
 
             resume_sub_traj_idx = 0
-            if last_high_idx == 0: # init
-                if dist.get_rank() == 0:
-                    last_event = setup_scene(env, traj_data, reward_type='dense')
-                    agent.add_log(log_type="step", log_data=agent.step)
-                    agent.add_log(log_type="total_reward", log_data=agent.total_reward)
-                    agent.add_log(log_type="agent_reward", log_data=agent.agent_only_reward)
-                    agent.add_log(log_type="token_length", log_data=0)
-                    agent.add_log(log_type="action", log_data='INIT')
-                    agent.add_log(log_type="subgoal", log_data='INIT')
-                    agent.add_log(log_type="t_reward", log_data=0)
-                    agent.add_log(log_type="high_idx", log_data=0)
-                else:
-                    logger.info(f"Rank: {dist.get_rank()} -- setup_scene")
-            else:
-                for ti, subtraj in enumerate(traj_data['sub_trajs']):
-                    start, end = subtraj['high_pddl_idx']
-                    if start <= last_high_idx + 1 <= end:
-                        resume_sub_traj_idx = ti
-                        logger.info(f" ========== [RESUME] resume_sub_traj_idx: {resume_sub_traj_idx} last_high_idx: {last_high_idx }========== ")
-                        break
-            
-            if resume_sub_traj_idx > 0: # proceed experts by resuming point
+            for ti, subtraj in enumerate(traj_data['sub_trajs']):
+                start, end = subtraj['low_pddl_idx']
+                if start <= last_step <= end:
+                    resume_sub_traj_idx = ti
+                    logger.info(f" ========== [RESUME] resume_sub_traj_idx: {resume_sub_traj_idx} last_high_idx: {last_high_idx }========== ")
+                    break
+
+            ########################################
+            # Proceed experts by resuming point
+            ########################################
+
+            if resume_sub_traj_idx > 0: 
                 if dist.get_rank() == 0:
                     last_event = setup_scene(env, traj_data, reward_type='dense')
                 else:
@@ -659,6 +636,8 @@ def main(
                     # Agent actions
                     #########################################################################
 
+                    agent.step = expert.step
+
                     if dist.get_rank() == 0:
                         input_ids, pixel_values = process_input(expert.traj_str, expert.img_list, processor)
                     else:
@@ -703,7 +682,7 @@ def main(
                             if (not is_valid_action(output_text)) or len(new_img) == 0:
                                 n_invalid_actions += 1
                                 done = True
-                                logger.info(f"ERROR - agent failed to generate valid actions. Break")
+                                logger.info(f"ERROR - agent failed to generate valid actions ")
                             else:
                                 n_invalid_actions = 0 # reset the count
                                 # get tensors ! 
