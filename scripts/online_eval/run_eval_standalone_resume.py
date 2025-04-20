@@ -505,6 +505,14 @@ def main(
 
                         input_ids, pixel_values = process_input(agent.traj_str, agent.img_list, processor)
 
+                    device_mem_stats = device_memory_monitor.get_peak_stats()
+                    logger.info(
+                        f"{device_type.upper()} memory usage for model: "
+                        f"{device_mem_stats.max_reserved_gib:.2f}GiB"
+                        f"({device_mem_stats.max_reserved_pct:.2f}%)"
+                    )
+                    device_memory_monitor.reset_peak_stats()
+
                     #########################################################################
                     # Agent action done. Expert's simulation for the GT context 
                     #########################################################################
