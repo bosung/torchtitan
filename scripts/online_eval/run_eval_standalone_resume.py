@@ -472,7 +472,7 @@ def main(
                     #########################################################################
 
                     agent.step = expert.step
-                    input_ids, pixel_values = process_input(agent.traj_str, agent.img_list, processor)
+                    input_ids, pixel_values = process_input(expert.traj_str, expert.img_list, processor)
 
                     done = False
                     
