@@ -414,6 +414,9 @@ def main(
                 num_subgoals = sub_traj['high_pddl_idx'][1] - sub_traj['high_pddl_idx'][0]
                 low_start, low_end = sub_traj['low_pddl_idx']
 
+                if low_start > 250:
+                    break
+
                 # to set task-dependent rewards
                 task_info = sub_task['task_info']
                 task_type = sub_task['task_info']['goal']
@@ -444,6 +447,10 @@ def main(
                         done = False
                         
                         while not done:
+                            if input_ids.shape[1] > 380000: # len limit for OOM
+                                done = True
+                                break
+
                             generated_tokens = generate(model, input_ids, pixel_values, device, act_tok_id, pad_tok_id)
                             gc.collect()
 
@@ -502,7 +509,7 @@ def main(
                 else:
                     break
 
-                if agent.log['token_length'][-1] > 350000: # seq_len limit for the standalone model,
+                if agent.log['token_length'][-1] > 380000: # seq_len limit for the standalone model,
                     break
 
 
