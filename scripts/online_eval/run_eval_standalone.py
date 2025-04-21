@@ -496,13 +496,13 @@ def main(
                 # end of one sub task. save logs
                 if sim_success:
                     save_json(reward_log_file, agent.log)
-                    s3_path = f"s3://bosung-alfred/eval_logs_v2/{model_type}"
+                    s3_path = f"s3://bosung-alfred/eval_logs_v3/{model_type}"
                     # reward_log_file = f"{log_dir}/{traj_id}.json"
                     save_s3(reward_log_file, s3_path)
                 else:
                     break
 
-                if agent.log['token_length'][-1] > 300000: # seq_len limit for the standalone model,
+                if agent.log['token_length'][-1] > 350000: # seq_len limit for the standalone model,
                     break
 
 
