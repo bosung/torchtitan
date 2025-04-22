@@ -193,9 +193,9 @@ class ALFREDDataset(IterableDataset, Stateful):
                         input_ids = pad_to_multiple(input_ids, self.cp_degree * 2, pad_token=self.eos_tok_id)
                         labels = pad_to_multiple(labels, self.cp_degree * 2, pad_token=self.ignore_index)
                     else:
-                        input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)
-                        labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)
-                    
+                        input_ids = pad_to_max_seq(input_ids, max_seq=self.max_seq_len, pad_token=self.eos_tok_id)[:, :self.max_seq_len]
+                        labels = pad_to_max_seq(labels, max_seq=self.max_seq_len, pad_token=self.ignore_index)[:, :self.max_seq_len]
+                        
                     self._chunk_idx += 1
                     yield {
                         'input_ids': input_ids,

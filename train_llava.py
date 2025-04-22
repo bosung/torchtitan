@@ -519,7 +519,6 @@ def main(job_config: JobConfig):
                         pp_schedule.step(inputs_embeds, target=targets, losses=losses)
                     else:
                         #pp_schedule.step(target=targets, losses=losses, **{"position_ids":position_ids})
-                        logger.info(f"step: {train_state.step:2} -- stage 2")
                         pp_schedule.step(target=targets, losses=losses)
                         logger.info(f"step: {train_state.step:2} -- stage 2 DONE ! ")
                 # accumulate losses across pipeline microbatches
