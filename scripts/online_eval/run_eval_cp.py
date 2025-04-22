@@ -655,7 +655,7 @@ def main(
                         logger.info(f"(generation) input_ids {input_ids.shape} {input_ids.dtype}")
                         logger.info(f"(generation) pixel_values {pixel_values.shape} {pixel_values.dtype}")
                         generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh,
-                        act_tok_id, stop_criterion=[act_tok_id, pad_tok_id, eos_tok_id, img_tok_id])
+                        act_tok_id, pad_tok_id, stop_criterion=[act_tok_id, pad_tok_id, eos_tok_id, img_tok_id])
                         gc.collect()
 
                         new_input_ids = None
