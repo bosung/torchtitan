@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 
 import torch
+import torch.nn as nn
 
 from torch.distributed.elastic.multiprocessing.errors import record
 import torch.distributed.checkpoint as dcp
@@ -40,10 +41,20 @@ def get_local_rank():
 def set_nested_attr(obj, name, value):
     """since model.register_buffer() doesn't work on module names with '.',
        manually set a neste attribute for buffers"""
+    if not hasattr(obj, name):
+        return
+    
     parts = name.split('.')
     for part in parts[:-1]:
-        obj = getattr(obj, part)
-    setattr(obj, parts[-1], value)
+        if isinstance(obj, (nn.ModuleList, list)):
+            obj = obj[int(part)]  # Convert string index to int for list access
+        else:
+            obj = getattr(obj, part)
+
+    #setattr(obj, parts[-1], value)
+    obj.register_buffer(parts[-1], value)
+    # if obj is not None:
+    #     setattr(obj, parts[-1], value)
 
 
 def combine_model_parts_state(model_parts):
@@ -287,19 +298,55 @@ def main(job_config: JobConfig):
         init_device = device_type
         buffer_device = None
 
+    checkpoint_path = 'distributed_checkpoint/'
+
     # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
-    train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
-    model.to_empty(device=init_device)
-    with torch.no_grad():
-        if job_config.checkpoint.create_seed_checkpoint:
-            checkpoint_path = 'distributed_checkpoint/'
-            state_dict = {"model": model.state_dict()}
-            dcp.load(state_dict, checkpoint_id=checkpoint_path)
-        # Restore buffers
-        # for name, buffer in buffers_dict.items():
-        #     set_nested_attr(model, name, buffer.to(device_type))
-    model.train()
-    model_parts = [model]
+    if parallel_dims.pp_enabled:
+        # apply PT-D Pipeline Parallel
+        (
+            pp_schedule,
+            model_parts,
+            has_first_stage,
+            has_last_stage,
+        ) = train_spec.pipelining_fn(
+            model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
+        )
+        # when PP is enabled, `model` obj is no longer used after this point, model_parts is used instead
+        del model
+
+        # Since TP shards input_embeds, position_ids is not algined based on its position
+        # set postion_ids as buffer so that not to pass in forward (only works for training)
+        position_ids = torch.arange(0, job_config.training.seq_len).unsqueeze(0)
+
+        # For PP with looped schedules, each item in model_parts is one stage-model-chunk.
+        # We need to iterate through model_parts to apply SPMD parallelisms, compilation,
+        # optimizer, and checkpointing
+        for m in model_parts:
+            # apply SPMD-style PT-D techniques
+            train_spec.parallelize_fn(m, world_mesh, parallel_dims, job_config)
+            m.to_empty(device=init_device)
+            # with torch.no_grad():
+            #     m.init_weights(buffer_device=buffer_device)
+            state_dict = {"model": m.state_dict()}
+            dcp.load(state_dict, checkpoint_id=checkpoint_path, planner=dcp.DefaultLoadPlanner(allow_partial_load=True))
+
+            if hasattr(m, "language_model"):
+                setattr(m.language_model.model, 'position_ids', position_ids.to(device_type))
+
+            m.train()
+    else:
+        train_spec.parallelize_fn(model, world_mesh, parallel_dims, job_config)
+        model.to_empty(device=init_device)
+        with torch.no_grad():
+            if job_config.checkpoint.create_seed_checkpoint:
+                checkpoint_path = 'distributed_checkpoint/'
+                state_dict = {"model": model.state_dict()}
+                dcp.load(state_dict, checkpoint_id=checkpoint_path)
+            # Restore buffers
+            # for name, buffer in buffers_dict.items():
+            #     set_nested_attr(model, name, buffer.to(device_type))
+        model.train()
+        model_parts = [model]
 
     device_mem_stats = device_memory_monitor.get_peak_stats()
     logger.info(
@@ -339,8 +386,9 @@ def main(job_config: JobConfig):
 
     # TODO: where is the best place to put buffer loading
     # Restore buffers after loading checkpoint
-    for name, buffer in buffers_dict.items():
-        set_nested_attr(model, name, buffer.to(device_type))
+    for m in model_parts:
+        for name, buffer in buffers_dict.items():
+            set_nested_attr(m, name, buffer.to(device_type))
     
     if job_config.training.rope_type and job_config.training.rope_type != "nope":
         logger.info(f"RoPE rescaling is in use: rope_kwargs: {rope_kwargs}")

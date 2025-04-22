@@ -92,15 +92,54 @@ def pipeline_llava_manual_split(
             del model.multi_modal_projector
         
         drop_layers = start_layer is not None
-        for name in list(model.language_model.model.layers.keys()): # name is index 0, 1, 2, ...
+
+        layers = model.language_model.model.layers
+
+        if isinstance(layers, nn.ModuleList):
+            start_idx = int(start_layer.split(".")[-1]) if start_layer else 0
+            stop_idx = int(stop_layer.split(".")[-1]) if stop_layer else len(layers)
+            model.language_model.model.layers = nn.ModuleList(
+                layers[start_idx:stop_idx]
+            )
+        elif isinstance(layers, nn.ModuleDict):
+            drop_layers = start_layer is not None
+            layers_to_delete = []
+
+            for name in layers.keys():
+                layer_name = f"layers.{name}"
+                if layer_name == start_layer:
+                    drop_layers = False
+                if drop_layers:
+                    layers_to_delete.append(name)
+                if layer_name == stop_layer:
+                    drop_layers = True
+
+            for name in layers_to_delete:
+                del layers[name]
+                
+        '''
+        if isinstance(layers, nn.ModuleDict):
+            layer_iterator = layers.items() # ModuleDict case - use .items()
+        else:
+            layer_iterator = enumerate(layers) # ModuleList case - use enumerate
+
+        layers_to_delete = []
+
+        # for name in list(model.language_model.model.layers.keys()): # name is index 0, 1, 2, ...
+        for name, _ in layer_iterator: # name is index 0, 1, 2, ...
             # we keep layers in a contiguous region between start (inclusive) and stop (exclusive)
             if f"layers.{name}" == start_layer:
                 drop_layers = False
             if f"layers.{name}" == stop_layer:
                 drop_layers = True
+            # if drop_layers:
+            #     del model.language_model.model.layers[name]
             if drop_layers:
-                del model.language_model.model.layers[name]
+                layers_to_delete.append(name)
 
+        for name in layers_to_delete:
+            del model.language_model.model.layers[name]
+        '''
         if not is_last:
             model.language_model.model.norm = None
             model.language_model.lm_head = None

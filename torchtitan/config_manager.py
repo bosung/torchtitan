@@ -314,7 +314,7 @@ class JobConfig:
         self.parser.add_argument(
             "--training.attn_impl",
             type=str,
-            default="eager"
+            default="sdpa"
         )
         self.parser.add_argument(
             "--training.rope_theta",
