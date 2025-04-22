@@ -493,6 +493,8 @@ def main(
 
     act_tok_id = processor.tokenizer('<|act|>').input_ids[0]
     pad_tok_id = processor.tokenizer.pad_token_id
+    eos_tok_id = processor.tokenizer.eos_token_id
+    img_tok_id = processor.tokenizer('<image>').input_ids[0]
 
     if dist.get_rank() == 0:
         env = ThorEnv()
@@ -526,7 +528,7 @@ def main(
             if os.path.exists(reward_log_file):
                 continue
 
-            last_step = 200
+            last_step = 230
 
             resume_sub_traj_idx = 0
             for ti, subtraj in enumerate(traj_data['sub_trajs']):
@@ -652,7 +654,8 @@ def main(
                     while not done:
                         logger.info(f"(generation) input_ids {input_ids.shape} {input_ids.dtype}")
                         logger.info(f"(generation) pixel_values {pixel_values.shape} {pixel_values.dtype}")
-                        generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id)
+                        generated_tokens = generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh,
+                        act_tok_id, stop_criterion=[act_tok_id, pad_tok_id, eos_tok_id, img_tok_id])
                         gc.collect()
 
                         new_input_ids = None
@@ -758,7 +761,7 @@ def main(
                     break # if expert traj fails, even next subgoal cannot make it
 
 @torch.no_grad()
-def generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id, max_new_tokens=10):
+def generate(model, input_ids, pixel_values, config, device, cp_degree, world_mesh, act_tok_id, pad_tok_id, stop_criterion, max_new_tokens=10):
     input_ids = input_ids.to(device)
     pixel_values = pixel_values.to(device)
     n_image =  torch.tensor([[pixel_values.shape[0]]], device=pixel_values.device)
@@ -814,11 +817,11 @@ def generate(model, input_ids, pixel_values, config, device, cp_degree, world_me
                 use_cache=False,
                 num_logits_to_keep=1)
 
-        new_token, _ = sample(logits, need_probs=True, temperature=1.0)
+        new_token, _ = sample(logits, need_probs=False, temperature=1.0)
         del logits
         logger.info(f"Rank: {dist.get_rank()},  new_token: {new_token.item()}")
 
-        if dist.get_rank() == 0 and new_token.item() == act_tok_id:
+        if dist.get_rank() == 0 and (new_token.item() in stop_criterion):
             end_of_act = True
         else:
             end_of_act = None
