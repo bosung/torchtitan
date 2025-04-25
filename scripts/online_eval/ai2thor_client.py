@@ -132,8 +132,9 @@ class ThorEnv():
 
     def step(self, action: dict):
         last_event = self.client.interact(action)
-        self.last_event = self.update_states(action, last_event)
-        self.check_post_conditions(action)
+        if last_event['success']:
+            self.last_event = self.update_states(action, last_event)
+            self.check_post_conditions(action)
         return self.last_event
 
     def restore_agent_last_state(self, expert):
