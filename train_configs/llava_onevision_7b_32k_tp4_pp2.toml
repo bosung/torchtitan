@@ -22,7 +22,7 @@ lr = 1e-5
 
 [training]
 batch_size = 2
-seq_len = 16384 # 32768
+seq_len = 32768
 warmup_steps = 1200  # lr scheduler warm up # warmup_ratio 0.03
 max_norm = 1.0  # grad norm clipping
 steps = 40000 # around 5 epochs
