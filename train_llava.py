@@ -93,15 +93,22 @@ def save_checkpoint_s3(states, step, output_dir): # output_dir: outputs/checkpoi
     dist.barrier()
 
 
-def warmup_dynamic_rope_scaling(model, seq_len, rope_kwargs):
+def warmup_dynamic_rope_scaling(model, device, seq_len, rope_kwargs):
     try:
         layers = model.language_model.model.layers
-        #device = model.device if hasattr(model, "device") else torch.device("cuda")
+        # device = model.device if hasattr(model, "device") else torch.device("cuda")
+        # device = torch.device("cuda")
+        config = model.language_model.config if hasattr(model.language_model, "config") else model.config
 
-        for i, layer in enumerate(layers):
-            layer.self_attn.rotary_emb.freq_update(seq_len, rope_kwargs)
-            
-        model.language_model.model.rotary_emb.freq_update(seq_len, rope_kwargs)
+        if rope_kwargs['rope_type'] == "yarn":
+            config.rope_scaling = rope_kwargs
+            for i, layer in enumerate(layers):
+                layer.self_attn.rotary_emb.freq_update(seq_len, rope_kwargs, device=device, config=config)
+            model.language_model.model.rotary_emb.freq_update(seq_len, rope_kwargs, device=device, config=config)
+        else:
+            for i, layer in enumerate(layers):
+                layer.self_attn.rotary_emb.freq_update(seq_len, rope_kwargs)
+            model.language_model.model.rotary_emb.freq_update(seq_len, rope_kwargs)
 
         logger.info(f"Warmed up RoPE scaling on {len(layers)} layers with seq_len = {seq_len} rope_kwargs = {rope_kwargs}")
     except Exception as e:
@@ -249,7 +256,7 @@ def main(job_config: JobConfig):
                 rope_kwargs['factor'] = 1 # https://github.com/huggingface/transformers/blob/b54c2f46891149210dbbe118fca55b1357a47003/src/transformers/modeling_rope_utils.py#L322
 
             if job_config.training.rope_type != "nope":
-                warmup_dynamic_rope_scaling(model, job_config.training.seq_len, rope_kwargs)
+                warmup_dynamic_rope_scaling(model, device, job_config.training.seq_len, rope_kwargs)
             assert model.language_model.model.layers[0].self_attn.rotary_emb.rope_type != 'dynamic'
         buffers_dict = {k: v.clone() for k, v in model.named_buffers()}
         #logger.info(f"{buffers_dict['language_model.model.layers.0.self_attn.rotary_emb.inv_freq']}")

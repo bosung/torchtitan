@@ -186,10 +186,13 @@ class Qwen2RotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
-    def freq_update(self, seq_len, rope_kwargs):
+    def freq_update(self, seq_len, rope_kwargs, device=None, config=None):
         rope_type = rope_kwargs['rope_type']
         rope_init_fn = ROPE_INIT_FUNCTIONS[rope_type]
-        inv_freq, self.attention_scaling = rope_init_fn(seq_len=seq_len, **rope_kwargs)
+        if rope_type == "yarn":
+            inv_freq, self.attention_scaling = rope_init_fn(config=config, device=device, seq_len=seq_len)
+        else:
+            inv_freq, self.attention_scaling = rope_init_fn(seq_len=seq_len, **rope_kwargs)
         #self.register_buffer("inv_freq", inv_freq, persistent=False)
         with torch.no_grad():
            self.inv_freq = inv_freq  # this will still show up in .state_dict()
