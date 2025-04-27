@@ -421,7 +421,7 @@ class AlfredDataLoader(StatefulDataLoader, Stateful):
         #super().__init__(hf_ds, batch_size, collate_fn=self.collate_fn)
         # Wrap the dataset with a DP-aware shard
         dp_sharded_dataset = self.shard_dataset(hf_ds, dp_rank, world_size)
-        super().__init__(dp_sharded_dataset, batch_size, collate_fn=self.collate_fn)
+        super().__init__(dp_sharded_dataset, batch_size, collate_fn=self.collate_fn, drop_last=True)
 
     def shard_dataset(self, dataset: IterableDataset, dp_rank: int, world_size: int):
         """Shard the dataset across DP ranks."""
