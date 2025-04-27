@@ -41,13 +41,20 @@ def get_local_rank():
 def set_nested_attr(obj, name, value):
     """since model.register_buffer() doesn't work on module names with '.',
        manually set a neste attribute for buffers"""
-    if not hasattr(obj, name):
-        return
-    
     parts = name.split('.')
+    
+    if not hasattr(obj, parts[0]):
+        """in pipeline paralleism, the second part of model doen not
+        have vision_tower. so skip in this case. """
+        return
+
     for part in parts[:-1]:
         if isinstance(obj, (nn.ModuleList, list)):
-            obj = obj[int(part)]  # Convert string index to int for list access
+            if int(part) < len(obj):
+                obj = obj[int(part)]  # Convert string index to int for list access
+            else:
+                logger.info(f"register buffer: PP is applied -- this model part doesn't have layers.{int(part)}")
+                return
         else:
             obj = getattr(obj, part)
 
