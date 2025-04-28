@@ -416,23 +416,29 @@ class ALFREDDataset(IterableDataset, Stateful):
 
 
 class AlfredDataLoader(StatefulDataLoader, Stateful):
+    # TODO: Update Dataset class with DP-aware shard and remove the wrapper (ShardedDataset)
     
     def __init__(self, dp_rank: int, hf_ds: IterableDataset, batch_size: int, world_size: int):
-        #super().__init__(hf_ds, batch_size, collate_fn=self.collate_fn)
+        # super().__init__(hf_ds, batch_size, collate_fn=self.collate_fn)
         # Wrap the dataset with a DP-aware shard
         dp_sharded_dataset = self.shard_dataset(hf_ds, dp_rank, world_size)
         super().__init__(dp_sharded_dataset, batch_size, collate_fn=self.collate_fn, drop_last=True)
 
     def shard_dataset(self, dataset: IterableDataset, dp_rank: int, world_size: int):
-        """Shard the dataset across DP ranks."""
+        # Shard the dataset across DP ranks
         class ShardedDataset(IterableDataset):
             def __iter__(self_inner):
-                # Use an iterator from the original dataset
                 all_data_iter = iter(dataset)
                 # Offset the iterator so each rank sees disjoint samples
                 return (x for i, x in enumerate(all_data_iter) if i % world_size == dp_rank)
 
         return ShardedDataset()
+
+    def load_state_dict(self, state_dict):
+        if isinstance(self.dataset, Stateful):
+            # Resuming dataloader with: {'_index_sampler_state': None, '_sampler_iter_state': {'samples_yielded': 1480}, '_sampler_iter_yielded': 740, '_num_yielded': 740, '_IterableDataset_len_called': None, '_shared_seed': None, 'fetcher_state': {'dataset_iter_state': None, 'fetcher_ended': False}, 'dataset_state': None, '_iterator_finished': False}
+            logger.info(f"Resuming dataloader with: {state_dict}")
+            self.dataset.load_state_dict(state_dict)
 
     @staticmethod
     def collate_fn(batch):
