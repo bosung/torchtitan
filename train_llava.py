@@ -312,8 +312,11 @@ def main(job_config: JobConfig):
         init_device = device_type
         buffer_device = None
 
-    #checkpoint_path = 'distributed_checkpoint/'
-    checkpoint_path = os.environ['CHECKPOINT_DIR']
+    checkpoint_dir = 'outputs/checkpoint'
+    if os.path.exists(checkpoint_dir) and os.listdir(checkpoint_dir):
+        checkpoint_path = os.path.join(checkpoint_dir, os.listdir(checkpoint_dir)[0])
+    else:
+        checkpoint_path = 'distributed_checkpoint/'
 
     # apply PT-D Tensor Parallel, activation checkpointing, torch.compile, Data Parallel
     if parallel_dims.pp_enabled:
