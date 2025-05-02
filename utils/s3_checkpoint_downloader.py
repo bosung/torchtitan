@@ -137,7 +137,8 @@ def get_latest_checkpoint(s3_path, local_base_dir, default_dir):
         
         # Create local directory for the checkpoint
         ckpt_dirname = os.path.basename(latest_s3_path.rstrip('/'))
-        local_ckpt_dir = os.path.join(local_base_dir, ckpt_dirname)
+        #local_ckpt_dir = os.path.join(local_base_dir, ckpt_dirname)
+        local_ckpt_dir = local_base_dir
         
         # Download the checkpoint files
         print(f"Downloading checkpoint to {local_ckpt_dir}...")
@@ -162,8 +163,8 @@ if __name__ == "__main__":
     # Make sure the local base directory exists
     os.makedirs(args.local_dir, exist_ok=True)
     output_dir = get_latest_checkpoint(args.path, args.local_dir, args.default_dir)
-    os.environ['CHECKPOINT_DIR'] = output_dir
-    print("chekcpoints: ", os.environ['CHECKPOINT_DIR'])
+    #os.environ['CHECKPOINT_DIR'] = output_dir
+    print("chekcpoints: ", output_dir)
 
     if output_dir == args.default_dir:
         model_name = "llava-hf/llava-onevision-qwen2-7b-ov-hf"
