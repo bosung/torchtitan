@@ -78,98 +78,94 @@ def main(
     ctx_extension: Optional[str] = None,
     ctx_extension_factor: Optional[float] = None,
 ) -> None:
-    try:
-        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        logger.info(f"Using device: {device}")
 
-        # Tokenizer setup
-        processor = AutoProcessor.from_pretrained(model_name)
-        processor.tokenizer.model_max_length = 1048576
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    logger.info(f"Using device: {device}")
 
-        llm_config = AutoConfig.from_pretrained(model_name)
-        
-        if ctx_extension:
-            logger.info(f"Using dynamic context length: {ctx_extension}")
-            if ctx_extension == "longrope":
-                llm_config.text_config.rope_scaling = {
-                    "rope_type": ctx_extension,
-                    "long_factor": ctx_extension_factor,
-                    "short_factor": 1,
-                    "factor": 1.0,
-                    "original_max_position_embeddings": llm_config.text_config.max_position_embeddings,
-                }
-            else:
-                llm_config.text_config.rope_scaling = {
-                    "rope_type": ctx_extension,
-                    "factor": ctx_extension_factor,
-                    "original_max_position_embeddings": llm_config.text_config.max_position_embeddings,
-                }
-        
-        logger.info("Loading model...")
-        model = LlavaOnevisionForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16, 
-            device_map="auto",
-            low_cpu_mem_usage=True,
-            config=llm_config)
+    # Tokenizer setup
+    processor = AutoProcessor.from_pretrained(model_name)
+    processor.tokenizer.model_max_length = 1048576
 
-        model.eval()
+    llm_config = AutoConfig.from_pretrained(model_name)
+    
+    if ctx_extension:
+        logger.info(f"Using dynamic context length: {ctx_extension}")
+        if ctx_extension == "longrope":
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,
+                "long_factor": ctx_extension_factor,
+                "short_factor": 1,
+                "factor": 1.0,
+                "original_max_position_embeddings": llm_config.text_config.max_position_embeddings,
+            }
+        else:
+            llm_config.text_config.rope_scaling = {
+                "rope_type": ctx_extension,
+                "factor": ctx_extension_factor,
+                "original_max_position_embeddings": llm_config.text_config.max_position_embeddings,
+            }
+    
+    logger.info("Loading model...")
+    model = LlavaOnevisionForConditionalGeneration.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16, 
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        config=llm_config)
 
-        n_img_token = model2num_img_token[model_name]
+    model.eval()
 
-        total_match = [0 for _ in target_depths]
-        total_count = [0 for _ in target_depths]
+    n_img_token = model2num_img_token[model_name]
 
-        for qidx, row in enumerate(tqdm(qa_data, desc="Processing QA pairs")):
-            try:
-                img_list, metadata, traj_text, img_path_list = nieh_utils.load_qa_data(row['traj_id'], metadata_dir)
-                assert len(img_list) == len(metadata['img_idx']), f"Image count mismatch for trajectory {row['traj_id']}"
+    total_match = [0 for _ in target_depths]
+    total_count = [0 for _ in target_depths]
 
-                prompt = f"""
-                These images are the agent's view in time order. Answer the question given the images.
-                Do not include explanation or reasoning in the answer. Answer with a single word or words.
-                {row['question']}
-                """
+    for qidx, row in enumerate(tqdm(qa_data, desc="Processing QA pairs")):
+        try:
+            img_list, metadata, traj_text, img_path_list = nieh_utils.load_qa_data(row['traj_id'], metadata_dir)
+            assert len(img_list) == len(metadata['img_idx']), f"Image count mismatch for trajectory {row['traj_id']}"
 
-                NiH_match = [0 for _ in target_depths]
-                NiH_count = [0 for _ in target_depths] 
+            prompt = f"""
+            These images are the agent's view in time order. Answer the question given the images.
+            Do not include explanation or reasoning in the answer. Answer with a single word or words.
+            {row['question']}
+            """
 
-                for di, depth in enumerate(target_depths):
-                    ctx_img_list = nieh_utils.build_haystack(ctx_size, depth, row['gt_img_idx'], n_img_token, img_list)
-                    
-                    if len(ctx_img_list) > 0:
-                        lm_response = generate(ctx_img_list, prompt, processor, model, device)
-                        if lm_response:  # Only process if we got a valid response
-                            score = nieh_utils.get_score(lm_response, row['answer'])
-                            logger.info(
-                                f"gt_idx: {row['gt_img_idx']}, ctx_size: {ctx_size}K, "
-                                f"depth: {depth_map[depth]}, n_imgs: {len(ctx_img_list)}, "
-                                f"score: {score}, lm_response: {lm_response}, ans: {row['answer']}"
-                            )
-                            NiH_match[di] = score
-                            NiH_count[di] = 1
+            NiH_match = [0 for _ in target_depths]
+            NiH_count = [0 for _ in target_depths] 
 
-                total_match = [x + y for x, y in zip(total_match, NiH_match)]
-                total_count = [x + y for x, y in zip(total_count, NiH_count)]
+            for di, depth in enumerate(target_depths):
+                ctx_img_list = nieh_utils.build_haystack(ctx_size, depth, row['gt_img_idx'], n_img_token, img_list)
+                
+                if len(ctx_img_list) > 0:
+                    lm_response = generate(ctx_img_list, prompt, processor, model, device)
+                    if lm_response:  # Only process if we got a valid response
+                        score = nieh_utils.get_score(lm_response, row['answer'])
+                        logger.info(
+                            f"gt_idx: {row['gt_img_idx']}, ctx_size: {ctx_size}K, "
+                            f"depth: {depth_map[depth]}, n_imgs: {len(ctx_img_list)}, "
+                            f"score: {score}, lm_response: {lm_response}, ans: {row['answer']}"
+                        )
+                        NiH_match[di] = score
+                        NiH_count[di] = 1
 
-            except Exception as e:
-                logger.error(f"Error processing QA pair {qidx}: {str(e)}")
-                continue
-        
-        # Print final results
-        logger.info("\nFinal Results:")
-        for depth in target_depths:
-            if total_count[depth] > 0:  # Avoid division by zero
-                score = np.array(total_match[depth]) / np.array(total_count[depth])
-                logger.info(
-                    f"ctx_size: {ctx_size}K, depth: {depth_map[depth]}, "
-                    f"score: {score:.4f}, total_match: {total_match[depth]}, "
-                    f"total_count: {total_count[depth]}"
-                )
+            total_match = [x + y for x, y in zip(total_match, NiH_match)]
+            total_count = [x + y for x, y in zip(total_count, NiH_count)]
 
-    except Exception as e:
-        logger.error(f"Fatal error in main: {str(e)}")
-        raise
+        except Exception as e:
+            logger.error(f"Error processing QA pair {qidx}: {str(e)}")
+            continue
+    
+    # Print final results
+    logger.info("\nFinal Results:")
+    for depth in target_depths:
+        if total_count[depth] > 0:  # Avoid division by zero
+            score = np.array(total_match[depth]) / np.array(total_count[depth])
+            logger.info(
+                f"ctx_size: {ctx_size}K, depth: {depth_map[depth]}, "
+                f"score: {score:.4f}, total_match: {total_match[depth]}, "
+                f"total_count: {total_count[depth]}"
+            )
 
     
 if __name__ == "__main__":

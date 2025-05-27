@@ -9,13 +9,19 @@ from flask import Flask, request, jsonify
 from PIL import Image
 import base64
 import io
+import argparse
 
 app = Flask(__name__)
 
+parser = argparse.ArgumentParser(description="AI2THOR Flask Service")
+parser.add_argument('--x_display', type=str, default=0, help='X display to use, e.g., "0" or "1"')
+parser.add_argument('--port', type=int, default=5000, help='Port to run the Flask server on')
+args = parser.parse_args()
+
 # Initialize the AI2THOR controller
-# Adjust these parameters based on your specific needs
 controller = ai2thor.controller.Controller()
-controller.start()
+controller.start(x_display=args.x_display)
+
 
 @app.route('/initialize', methods=['POST'])
 def initialize():
@@ -35,6 +41,7 @@ def initialize():
             "success": False,
             "error": str(e)
         }), 500
+
 
 @app.route('/interact', methods=['POST'])
 def interact():
@@ -95,11 +102,12 @@ def interact():
             "error": str(e)
         }), 500
 
+
 @app.route('/status', methods=['GET'])
 def status():
     """Check if the service is running"""
     return jsonify({"status": "AI2THOR service is running"})
 
-if __name__ == '__main__':
-    print("Starting AI2THOR service on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+
+print(f"Starting AI2THOR service on port {args.port}...")
+app.run(host='0.0.0.0', port=args.port, debug=False)

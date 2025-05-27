@@ -7,13 +7,17 @@ import env_utils.gen.constants as constants
 
 from torchtitan.logging import logger
 
+#import logging
+#logger = logging.getLogger()
+
+
 class ThorEnv():
     '''
     Environment class that interacts with ai2thor.controller.Controller
     over HTTP. Includes extension codes for ALFRED tasks.
     adopted by: https://github.com/askforalfred/alfred/blob/master/env/thor_env.py
     '''
-    def __init__(self):
+    def __init__(self, port=5000):
         self.task = None
         self.last_event = None
         self.scene_num = None
@@ -27,7 +31,7 @@ class ThorEnv():
         self.cooled_reward = False
         self.reopen_reward = False
 
-        self.client = AI2THORClient()
+        self.client = AI2THORClient(service_port=port)
 
         print("ThorEnv started.")
 
@@ -341,8 +345,8 @@ class ThorEnv():
 
 
 class AI2THORClient:
-    def __init__(self, service_url="http://localhost:5000"):
-        self.service_url = service_url
+    def __init__(self, service_port=5000, service_url="http://localhost"):
+        self.service_url = f"{service_url}:{service_port}"
         self.check_service()
     
     def check_service(self):
